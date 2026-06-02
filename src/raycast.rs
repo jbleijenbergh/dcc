@@ -21,7 +21,7 @@ impl Ray {
         let inv_vp = (proj * view).inverse();
 
         // Project near and far points
-        let ndc_near = Vec4::new(ndc_x, ndc_y, 0.0, 1.0);
+        let ndc_near = Vec4::new(ndc_x, ndc_y, -1.0, 1.0);
         let ndc_far = Vec4::new(ndc_x, ndc_y, 1.0, 1.0);
 
         let near_world = inv_vp * ndc_near;

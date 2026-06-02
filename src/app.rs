@@ -726,6 +726,23 @@ impl State {
                 });
 
             ui.separator();
+            egui::CollapsingHeader::new("Model Hierarchy")
+                .default_open(true)
+                .show(ui, |ui| {
+                    let doc = &self.viewport.document;
+                    if doc.scenes.is_empty() {
+                        ui.label("No scene loaded");
+                    } else {
+                        let active_scene = &doc.scenes[doc.active_scene_idx];
+                        egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
+                            for &root_idx in &active_scene.root_nodes {
+                                draw_node_tree(ui, &doc.nodes, root_idx);
+                            }
+                        });
+                    }
+                });
+
+            ui.separator();
             egui::CollapsingHeader::new("Light Settings")
                 .default_open(true)
                 .show(ui, |ui| {
@@ -882,4 +899,53 @@ impl State {
 
         Ok(())
     }
+}
+
+fn draw_node_tree(ui: &mut egui::Ui, nodes: &[crate::mesh::Node], node_idx: usize) {
+    if node_idx >= nodes.len() {
+        return;
+    }
+    let node = &nodes[node_idx];
+    let label = node.name.clone().unwrap_or_else(|| format!("Node {}", node_idx));
+    
+    let has_children = !node.children.is_empty();
+    let has_mesh = node.mesh.is_some();
+    
+    if !has_children && !has_mesh {
+        ui.horizontal(|ui| {
+            ui.label(format!("📄 {}", label));
+        });
+    } else {
+        egui::CollapsingHeader::new(format!("📁 {}", label))
+            .default_open(true)
+            .show(ui, |ui| {
+                if let Some(ref mesh) = node.mesh {
+                    draw_mesh_info(ui, mesh);
+                }
+                for &child_idx in &node.children {
+                    draw_node_tree(ui, nodes, child_idx);
+                }
+            });
+    }
+}
+
+fn draw_mesh_info(ui: &mut egui::Ui, mesh: &crate::mesh::Mesh) {
+    egui::CollapsingHeader::new("📦 Mesh")
+        .default_open(true)
+        .show(ui, |ui| {
+            for (idx, prim) in mesh.primitives.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.label(format!("📐 Primitive {}", idx));
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "({} verts, {} indices)",
+                            prim.vertices.len(),
+                            prim.num_indices
+                        ))
+                        .weak()
+                        .size(10.0),
+                    );
+                });
+            }
+        });
 }

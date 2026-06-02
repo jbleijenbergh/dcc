@@ -620,10 +620,10 @@ impl Painter {
         let dy = from.y - to.y;
         let uv_dist_sq = dx * dx + dy * dy;
 
-        // If the remaining distance in UV space is too large (e.g. > 0.25),
+        // If the remaining distance in UV space is too large (e.g. > 0.5),
         // we treat it as a discontinuous seam crossing and do not interpolate.
         // We only paint the stamp at the current position `to`.
-        let is_discontinuous = uv_dist_sq > 0.25 * 0.25;
+        let is_discontinuous = uv_dist_sq > 0.5 * 0.5;
 
         let from_px = glam::Vec2::new(from_x, from.y) * glam::Vec2::new(self.width as f32, self.height as f32);
         let to_px = glam::Vec2::new(to_x, to.y) * glam::Vec2::new(self.width as f32, self.height as f32);
