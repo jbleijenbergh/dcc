@@ -71,6 +71,7 @@ pub struct BrushUniforms {
 
 pub const MAX_LAYERS: usize = 16;
 
+#[allow(dead_code)]
 pub struct Painter {
     pub width: u32,
     pub height: u32,
@@ -207,8 +208,8 @@ impl Painter {
 
         let brush_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Brush Pipeline Layout"),
-            bind_group_layouts: &[&brush_bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&brush_bind_group_layout)],
+            immediate_size: 0,
         });
 
         let instance_desc = wgpu::VertexBufferLayout {
@@ -228,13 +229,13 @@ impl Painter {
             layout: Some(&brush_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &brush_shader,
-                entry_point: "vs_main",
+                entry_point: Some("vs_main"),
                 buffers: &[instance_desc.clone()],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &brush_shader,
-                entry_point: "fs_main",
+                entry_point: Some("fs_main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: wgpu::TextureFormat::Rgba8UnormSrgb,
@@ -259,7 +260,8 @@ impl Painter {
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
+            cache: None,
         });
 
         // Eraser uses subtractive alpha blending
@@ -268,13 +270,13 @@ impl Painter {
             layout: Some(&brush_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &brush_shader,
-                entry_point: "vs_main",
+                entry_point: Some("vs_main"),
                 buffers: &[instance_desc.clone()],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &brush_shader,
-                entry_point: "fs_main",
+                entry_point: Some("fs_main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: wgpu::TextureFormat::Rgba8UnormSrgb,
@@ -299,7 +301,8 @@ impl Painter {
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
+            cache: None,
         });
 
         // 3. Composite Pipeline
@@ -359,8 +362,8 @@ impl Painter {
 
         let composite_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Composite Pipeline Layout"),
-            bind_group_layouts: &[&composite_bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&composite_bind_group_layout)],
+            immediate_size: 0,
         });
 
         let composite_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -368,13 +371,13 @@ impl Painter {
             layout: Some(&composite_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &composite_shader,
-                entry_point: "vs_main",
+                entry_point: Some("vs_main"),
                 buffers: &[],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &composite_shader,
-                entry_point: "fs_main",
+                entry_point: Some("fs_main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: wgpu::TextureFormat::Rgba8UnormSrgb,
@@ -388,7 +391,8 @@ impl Painter {
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
+            cache: None,
         });
 
         let default_layer = Layer::new("Layer 1".to_string());
@@ -452,10 +456,12 @@ impl Painter {
                         }),
                         store: wgpu::StoreOp::Store,
                     },
+                    depth_slice: None,
                 })],
                 depth_stencil_attachment: None,
                 occlusion_query_set: None,
                 timestamp_writes: None,
+                multiview_mask: None,
             });
             rpass.set_pipeline(&self.composite_pipeline);
             rpass.set_bind_group(0, &self.composite_bind_group, &[]);
@@ -483,13 +489,13 @@ impl Painter {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         for i in index..self.layers.len() {
             encoder.copy_texture_to_texture(
-                wgpu::ImageCopyTexture {
+                wgpu::TexelCopyTextureInfo {
                     texture: &self.layer_array_texture,
                     mip_level: 0,
                     origin: wgpu::Origin3d { x: 0, y: 0, z: (i + 1) as u32 },
                     aspect: wgpu::TextureAspect::All,
                 },
-                wgpu::ImageCopyTexture {
+                wgpu::TexelCopyTextureInfo {
                     texture: &self.layer_array_texture,
                     mip_level: 0,
                     origin: wgpu::Origin3d { x: 0, y: 0, z: i as u32 },
@@ -516,10 +522,12 @@ impl Painter {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
                     },
+                    depth_slice: None,
                 })],
                 depth_stencil_attachment: None,
                 occlusion_query_set: None,
                 timestamp_writes: None,
+                multiview_mask: None,
             });
         }
         queue.submit(std::iter::once(encoder.finish()));
@@ -547,7 +555,7 @@ impl Painter {
         let layer_idx = self.layers.len() as u32;
 
         queue.write_texture(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: &self.layer_array_texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d {
@@ -558,7 +566,7 @@ impl Painter {
                 aspect: wgpu::TextureAspect::All,
             },
             &img,
-            wgpu::ImageDataLayout {
+            wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(4 * self.width),
                 rows_per_image: Some(self.height),
@@ -592,10 +600,12 @@ impl Painter {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
                     },
+                    depth_slice: None,
                 })],
                 depth_stencil_attachment: None,
                 occlusion_query_set: None,
                 timestamp_writes: None,
+                multiview_mask: None,
             });
         }
         queue.submit(std::iter::once(encoder.finish()));
@@ -703,10 +713,12 @@ impl Painter {
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
                     },
+                    depth_slice: None,
                 })],
                 depth_stencil_attachment: None,
                 occlusion_query_set: None,
                 timestamp_writes: None,
+                multiview_mask: None,
             });
             rpass.set_pipeline(if is_eraser { &self.brush_pipeline_sub } else { &self.brush_pipeline_add });
             rpass.set_bind_group(0, &self.brush_bind_group, &[]);
@@ -740,15 +752,15 @@ impl Painter {
         
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         encoder.copy_texture_to_buffer(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: &self.texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            wgpu::ImageCopyBuffer {
+            wgpu::TexelCopyBufferInfo {
                 buffer: &buffer,
-                layout: wgpu::ImageDataLayout {
+                layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(padded_bytes_per_row),
                     rows_per_image: Some(self.height),
@@ -764,7 +776,7 @@ impl Painter {
             tx.send(result).unwrap();
         });
         
-        device.poll(wgpu::Maintain::Wait);
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
         
         if let Ok(Ok(())) = rx.recv() {
             let padded_data = buffer_slice.get_mapped_range();

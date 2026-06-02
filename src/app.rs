@@ -3,6 +3,14 @@ use winit::event::WindowEvent;
 use winit::window::Window;
 use crate::painter::BlendMode;
 
+#[derive(Debug)]
+pub enum SurfaceError {
+    Lost,
+    Outdated,
+    Timeout,
+    Other(String),
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tool {
     Brush,
@@ -15,7 +23,7 @@ pub struct State {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     pub size: winit::dpi::PhysicalSize<u32>,
-    window: Arc<Window>,
+    pub window: Arc<Window>,
 
     // Render pipeline & logic state
     viewport: crate::viewport::Viewport,
@@ -68,7 +76,10 @@ impl State {
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::VULKAN,
-            ..Default::default()
+            flags: wgpu::InstanceFlags::default(),
+            backend_options: wgpu::BackendOptions::default(),
+            display: None,
+            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
         });
 
         let surface = instance.create_surface(window.clone()).unwrap();
@@ -83,14 +94,14 @@ impl State {
             .unwrap();
 
         let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits::default(),
-                    label: None,
-                },
-                None,
-            )
+            .request_device(&wgpu::DeviceDescriptor {
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+                label: None,
+                experimental_features: wgpu::ExperimentalFeatures::default(),
+                memory_hints: wgpu::MemoryHints::default(),
+                trace: wgpu::Trace::Off,
+            })
             .await
             .unwrap();
         let device = Arc::new(device);
@@ -136,19 +147,27 @@ impl State {
 
         // Initialize Egui
         let egui_ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+        egui_ctx.set_fonts(fonts);
+
         let egui_state = egui_winit::State::new(
             egui_ctx.clone(),
             egui::ViewportId::ROOT,
-            &window,
+            &*window,
             Some(window.scale_factor() as f32),
             None,
+            Some(device.limits().max_texture_dimension_2d as usize),
         );
 
         let egui_renderer = egui_wgpu::Renderer::new(
             &device,
             surface_format,
-            None,
-            1,
+            egui_wgpu::RendererOptions {
+                depth_stencil_format: None,
+                msaa_samples: 1,
+                ..Default::default()
+            },
         );
 
         Self {
@@ -211,7 +230,7 @@ impl State {
         }
 
         // Let egui intercept events first
-        let egui_resp = self.egui_state.on_window_event(&self.window, event);
+        let egui_resp = self.egui_state.on_window_event(&*self.window, event);
         if egui_resp.consumed {
             return true;
         }
@@ -225,7 +244,7 @@ impl State {
                 },
                 ..
             } => {
-                if self.egui_ctx.wants_keyboard_input() {
+                if self.egui_ctx.egui_wants_keyboard_input() {
                     return false;
                 }
 
@@ -265,7 +284,7 @@ impl State {
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                if self.egui_ctx.wants_pointer_input() {
+                if self.egui_ctx.egui_wants_pointer_input() {
                     return false;
                 }
 
@@ -295,7 +314,7 @@ impl State {
                 let dy = position.y - self.last_mouse_pos.y;
                 self.last_mouse_pos = *position;
 
-                if self.egui_ctx.wants_pointer_input() {
+                if self.egui_ctx.egui_wants_pointer_input() {
                     return false;
                 }
 
@@ -330,7 +349,7 @@ impl State {
                 false
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                if self.egui_ctx.wants_pointer_input() {
+                if self.egui_ctx.egui_wants_pointer_input() {
                     return false;
                 }
 
@@ -346,7 +365,7 @@ impl State {
     }
 
     fn paint_at_cursor(&mut self) {
-        if self.egui_ctx.wants_pointer_input() {
+        if self.egui_ctx.egui_wants_pointer_input() {
             return;
         }
 
@@ -495,10 +514,11 @@ impl State {
         }
     }
 
-    pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+    #[allow(deprecated)]
+    pub fn render(&mut self) -> Result<(), SurfaceError> {
         // 1. Begin Egui frame
-        let egui_input = self.egui_state.take_egui_input(&self.window);
-        self.egui_ctx.begin_frame(egui_input);
+        let egui_input = self.egui_state.take_egui_input(&*self.window);
+        self.egui_ctx.begin_pass(egui_input);
 
         let mut export_requested = false;
         let mut clear_requested = false;
@@ -506,8 +526,8 @@ impl State {
         let mut gltf_to_load = None;
 
         // Top Menu Bar
-        egui::TopBottomPanel::top("top_menu").show(&self.egui_ctx, |ui| {
-            egui::menu::bar(ui, |ui| {
+        egui::Panel::top("top_menu").show(&self.egui_ctx, |ui| {
+            egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
                     if ui.button("Open glTF Model...").clicked() {
                         if let Some(path) = rfd::FileDialog::new()
@@ -516,16 +536,16 @@ impl State {
                         {
                             gltf_to_load = Some(path);
                         }
-                        ui.close_menu();
+                        ui.close();
                     }
                     ui.separator();
                     if ui.button("Clear Canvas").clicked() {
                         clear_requested = true;
-                        ui.close_menu();
+                        ui.close();
                     }
                     if ui.button("Export Composed Texture (PNG)").clicked() {
                         export_requested = true;
-                        ui.close_menu();
+                        ui.close();
                     }
                     ui.separator();
                     if ui.button("Exit").clicked() {
@@ -536,7 +556,7 @@ impl State {
                 ui.separator();
                 ui.label("Model:");
                 let current_mesh = self.current_mesh_type.clone();
-                egui::ComboBox::from_id_source("mesh_select")
+                egui::ComboBox::from_id_salt("mesh_select")
                     .selected_text(&current_mesh)
                     .show_ui(ui, |ui| {
                         if ui.selectable_value(&mut self.current_mesh_type, "Sphere".to_string(), "Sphere").changed() {
@@ -557,7 +577,7 @@ impl State {
                     let scene_name = self.viewport.document.scenes[active_idx].name
                         .clone()
                         .unwrap_or_else(|| format!("Scene {}", active_idx));
-                    egui::ComboBox::from_id_source("scene_select")
+                    egui::ComboBox::from_id_salt("scene_select")
                         .selected_text(&scene_name)
                         .show_ui(ui, |ui| {
                             for (idx, scene) in self.viewport.document.scenes.iter().enumerate() {
@@ -572,7 +592,7 @@ impl State {
         });
 
         // Bottom Asset Shelf
-        egui::TopBottomPanel::bottom("asset_shelf").resizable(true).min_height(60.0).show(&self.egui_ctx, |ui| {
+        egui::Panel::bottom("asset_shelf").resizable(true).min_size(60.0).show(&self.egui_ctx, |ui| {
             ui.heading("Asset Shelf");
             ui.horizontal(|ui| {
                 ui.label("Assets will appear here...");
@@ -580,16 +600,22 @@ impl State {
         });
 
         // Left Panel (Toolbar)
-        egui::SidePanel::left("left_toolbar").resizable(false).show(&self.egui_ctx, |ui| {
+        egui::Panel::left("left_toolbar").resizable(false).show(&self.egui_ctx, |ui| {
             ui.heading("Tools");
             ui.separator();
 
-            let brush_btn = ui.selectable_label(self.active_tool == Tool::Brush, "🖌 Brush");
+            let brush_btn = ui.selectable_label(
+                self.active_tool == Tool::Brush,
+                format!("{} Brush", egui_phosphor::regular::PAINT_BRUSH),
+            );
             if brush_btn.clicked() {
                 self.active_tool = Tool::Brush;
             }
 
-            let eraser_btn = ui.selectable_label(self.active_tool == Tool::Eraser, "🧽 Eraser");
+            let eraser_btn = ui.selectable_label(
+                self.active_tool == Tool::Eraser,
+                format!("{} Eraser", egui_phosphor::regular::ERASER),
+            );
             if eraser_btn.clicked() {
                 self.active_tool = Tool::Eraser;
             }
@@ -601,7 +627,7 @@ impl State {
         });
 
         // Right Panel (Properties and Layers)
-        egui::SidePanel::right("right_panel").default_width(280.0).show(&self.egui_ctx, |ui| {
+        egui::Panel::right("right_panel").default_size(280.0).show(&self.egui_ctx, |ui| {
             ui.heading("Settings");
             ui.separator();
 
@@ -689,7 +715,7 @@ impl State {
                                 ui.horizontal(|ui| {
                                     ui.label("Blend:");
                                     let mut blend = self.painter.layers[idx].blend_mode;
-                                    egui::ComboBox::from_id_source(format!("blend_{}", idx))
+                                    egui::ComboBox::from_id_salt(format!("blend_{}", idx))
                                         .selected_text(blend.to_str())
                                         .show_ui(ui, |ui| {
                                             if ui.selectable_value(&mut blend, BlendMode::Normal, "Normal").changed() {
@@ -761,7 +787,7 @@ impl State {
                     ui.horizontal(|ui| {
                         ui.label("View Transform:");
                         let current_transform = self.viewport.view_transform;
-                        egui::ComboBox::from_id_source("view_transform_select")
+                        egui::ComboBox::from_id_salt("view_transform_select")
                             .selected_text(match current_transform {
                                 crate::viewport::ViewTransform::Standard => "Standard Linear",
                                 crate::viewport::ViewTransform::AgX => "AgX",
@@ -804,10 +830,10 @@ impl State {
                 .resizable(false)
                 .movable(false)
                 .title_bar(false)
-                .frame(egui::Frame::window(&self.egui_ctx.style())
+                .frame(egui::Frame::window(&self.egui_ctx.global_style())
                     .fill(egui::Color32::from_black_alpha(200))
                     .inner_margin(25.0)
-                    .rounding(12.0))
+                    .corner_radius(12.0))
                 .show(&self.egui_ctx, |ui| {
                     ui.vertical_centered(|ui| {
                         ui.add(egui::Spinner::new().size(50.0));
@@ -824,7 +850,7 @@ impl State {
                 });
         }
 
-        let egui_output = self.egui_ctx.end_frame();
+        let egui_output = self.egui_ctx.end_pass();
         let paint_jobs = self.egui_ctx.tessellate(egui_output.shapes, egui_output.pixels_per_point);
 
         for (id, image_delta) in &egui_output.textures_delta.set {
@@ -837,7 +863,15 @@ impl State {
         };
 
         // 1. Fetch swapchain texture and create view
-        let surface_texture = self.surface.get_current_texture()?;
+        let surface_texture = match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(t) => t,
+            wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+            wgpu::CurrentSurfaceTexture::Timeout => return Err(SurfaceError::Timeout),
+            wgpu::CurrentSurfaceTexture::Outdated => return Err(SurfaceError::Outdated),
+            wgpu::CurrentSurfaceTexture::Lost => return Err(SurfaceError::Lost),
+            wgpu::CurrentSurfaceTexture::Occluded => return Err(SurfaceError::Timeout),
+            wgpu::CurrentSurfaceTexture::Validation => return Err(SurfaceError::Other("Validation error".into())),
+        };
         let view = surface_texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -876,11 +910,13 @@ impl State {
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
                     },
+                    depth_slice: None,
                 })],
                 depth_stencil_attachment: None,
                 occlusion_query_set: None,
                 timestamp_writes: None,
-            });
+                multiview_mask: None,
+            }).forget_lifetime();
 
             self.egui_renderer.render(
                 &mut egui_pass,
