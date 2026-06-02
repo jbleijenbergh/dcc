@@ -61,9 +61,10 @@ pub fn create_sphere(radius: f32, rings: u32, sectors: u32) -> (Vec<Vertex>, Vec
             let ny = y;
             let nz = z;
 
+            // U increases from left to right on the front face
             let u = s as f32 * s_step;
-            // V goes from 0 at south pole to 1 at north pole
-            let v = r as f32 * r_step;
+            // Invert V so V=0 (top of texture) maps to North Pole (y=1) instead of South Pole
+            let v = 1.0 - (r as f32 * r_step);
 
             vertices.push(Vertex {
                 position: [px, py, pz],
@@ -82,13 +83,13 @@ pub fn create_sphere(radius: f32, rings: u32, sectors: u32) -> (Vec<Vertex>, Vec
 
             // Triangle 1
             indices.push(i0);
-            indices.push(i1);
             indices.push(i2);
+            indices.push(i1);
 
             // Triangle 2
             indices.push(i0);
-            indices.push(i2);
             indices.push(i3);
+            indices.push(i2);
         }
     }
 
@@ -122,19 +123,48 @@ pub fn create_cube(size: f32) -> (Vec<Vertex>, Vec<u32>) {
         [-1.0, 0.0, 0.0],  // Left
     ];
 
-    let uvs = [
-        [0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0],
+    // UVs for each of the 6 faces.
+    // Each face has 4 vertices in the following order of positions:
+    // Front: [BL, BR, TR, TL] -> Upright layout: [BL, BR, TR, TL]
+    // Back: [BR, TR, TL, BL] (looking at it from behind, BL is [half, -half, -half]) -> Upright layout: [BR, TR, TL, BL]
+    // Top: [TL, BL, BR, TR] (looking from above, Up is -Z) -> Upright layout: [TL, BL, BR, TR]
+    // Bottom: [BL, BR, TR, TL] (looking from below, Up is +Z) -> Upright layout: [BL, BR, TR, TL]
+    // Right: [BR, TR, TL, BL] (looking from right, Up is +Y, Left is +Z) -> Upright layout: [BR, TR, TL, BL]
+    // Left: [BL, BR, TR, TL] (looking from left, Up is +Y, Left is -Z) -> Upright layout: [BL, BR, TR, TL]
+    let face_uvs = [
+        [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]], // Front
+        [[1.0, 1.0], [1.0, 0.0], [0.0, 0.0], [0.0, 1.0]], // Back
+        [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]], // Top
+        [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]], // Bottom
+        [[1.0, 1.0], [1.0, 0.0], [0.0, 0.0], [0.0, 1.0]], // Right
+        [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]], // Left
     ];
 
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
 
     for face in 0..6 {
+        // Define sub-rectangles in the 4x3 grid atlas.
+        // Each column is 0.25 wide, each row is 1/3 (0.333333) high.
+        let (u_min, u_max, v_min, v_max) = match face {
+            0 => (0.25, 0.50, 1.0 / 3.0, 2.0 / 3.0), // Front
+            1 => (0.75, 1.00, 1.0 / 3.0, 2.0 / 3.0), // Back
+            2 => (0.25, 0.50, 0.0,       1.0 / 3.0), // Top
+            3 => (0.25, 0.50, 2.0 / 3.0, 1.0),       // Bottom
+            4 => (0.50, 0.75, 1.0 / 3.0, 2.0 / 3.0), // Right
+            5 => (0.00, 0.25, 1.0 / 3.0, 2.0 / 3.0), // Left
+            _ => unreachable!(),
+        };
+
         for v in 0..4 {
+            let original_uv = face_uvs[face][v];
+            let u = u_min + original_uv[0] * (u_max - u_min);
+            let v_coord = v_min + original_uv[1] * (v_max - v_min);
+
             vertices.push(Vertex {
                 position: positions[face * 4 + v],
                 normal: normals[face],
-                tex_coords: uvs[v],
+                tex_coords: [u, v_coord],
             });
         }
 
@@ -149,3 +179,67 @@ pub fn create_cube(size: f32) -> (Vec<Vertex>, Vec<u32>) {
 
     (vertices, indices)
 }
+
+pub fn create_plane(size: f32) -> (Vec<Vertex>, Vec<u32>) {
+    let half = size / 2.0;
+
+    // Double-sided quad (front facing +Z, back facing -Z)
+    let vertices = vec![
+        // Front face (facing +Z, CCW winding, normal [0.0, 0.0, 1.0])
+        Vertex {
+            position: [-half, -half, 0.0],
+            normal: [0.0, 0.0, 1.0],
+            tex_coords: [0.0, 1.0], // Bottom-Left
+        },
+        Vertex {
+            position: [half, -half, 0.0],
+            normal: [0.0, 0.0, 1.0],
+            tex_coords: [1.0, 1.0], // Bottom-Right
+        },
+        Vertex {
+            position: [half, half, 0.0],
+            normal: [0.0, 0.0, 1.0],
+            tex_coords: [1.0, 0.0], // Top-Right
+        },
+        Vertex {
+            position: [-half, half, 0.0],
+            normal: [0.0, 0.0, 1.0],
+            tex_coords: [0.0, 0.0], // Top-Left
+        },
+
+        // Back face (facing -Z, CCW winding from behind, normal [0.0, 0.0, -1.0])
+        Vertex {
+            position: [half, -half, 0.0],
+            normal: [0.0, 0.0, -1.0],
+            tex_coords: [1.0, 1.0], // Bottom-Left from behind
+        },
+        Vertex {
+            position: [-half, -half, 0.0],
+            normal: [0.0, 0.0, -1.0],
+            tex_coords: [0.0, 1.0], // Bottom-Right from behind
+        },
+        Vertex {
+            position: [-half, half, 0.0],
+            normal: [0.0, 0.0, -1.0],
+            tex_coords: [0.0, 0.0], // Top-Right from behind
+        },
+        Vertex {
+            position: [half, half, 0.0],
+            normal: [0.0, 0.0, -1.0],
+            tex_coords: [1.0, 0.0], // Top-Left from behind
+        },
+    ];
+
+    let indices = vec![
+        // Front face triangles
+        0, 1, 2,
+        0, 2, 3,
+
+        // Back face triangles
+        4, 5, 6,
+        4, 6, 7,
+    ];
+
+    (vertices, indices)
+}
+

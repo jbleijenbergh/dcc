@@ -1,4 +1,4 @@
-use glam::{Vec2, Vec3, Vec4, Mat4};
+use glam::{Vec2, Vec3, Vec4, Mat4, Vec4Swizzles};
 use crate::mesh::Vertex;
 
 pub struct Ray {

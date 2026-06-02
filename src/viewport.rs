@@ -1,6 +1,5 @@
-use std::sync::Arc;
 use wgpu::util::DeviceExt;
-use glam::{Mat4, Vec3, Vec4};
+use glam::{Mat4, Vec3};
 use crate::mesh::{Vertex, create_sphere};
 
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -45,6 +44,13 @@ impl Camera {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ViewTransform {
+    Standard,
+    AgX,
+    ACES,
+}
+
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct CameraUniform {
@@ -52,6 +58,10 @@ struct CameraUniform {
     view_position: [f32; 4],
     light_dir: [f32; 4],
     light_color: [f32; 4],
+    ambient_strength: f32,
+    view_transform: f32, // 0.0 for Standard, 1.0 for AgX, 2.0 for ACES
+    exposure: f32,
+    padding: f32,
 }
 
 impl CameraUniform {
@@ -61,10 +71,22 @@ impl CameraUniform {
             view_position: [0.0, 0.0, 0.0, 1.0],
             light_dir: [-1.0, -1.0, -0.5, 0.0],
             light_color: [1.0, 1.0, 1.0, 1.0],
+            ambient_strength: 0.25,
+            view_transform: 0.0,
+            exposure: 1.0,
+            padding: 0.0,
         }
     }
 
-    fn update_view_proj(&mut self, camera: &Camera, light_angle: f32) {
+    fn update_view_proj(
+        &mut self,
+        camera: &Camera,
+        light_angle: f32,
+        light_intensity: f32,
+        ambient_strength: f32,
+        view_transform: ViewTransform,
+        exposure: f32,
+    ) {
         self.view_proj = camera.build_view_projection_matrix().to_cols_array_2d();
         let eye = camera.get_eye();
         self.view_position = [eye.x, eye.y, eye.z, 1.0];
@@ -73,12 +95,25 @@ impl CameraUniform {
         let lx = light_angle.cos();
         let lz = light_angle.sin();
         self.light_dir = [lx, -1.0, lz, 0.0];
+        self.light_color[3] = light_intensity;
+
+        self.ambient_strength = ambient_strength;
+        self.view_transform = match view_transform {
+            ViewTransform::Standard => 0.0,
+            ViewTransform::AgX => 1.0,
+            ViewTransform::ACES => 2.0,
+        };
+        self.exposure = exposure;
     }
 }
 
 pub struct Viewport {
     pub camera: Camera,
     pub light_angle: f32,
+    pub light_intensity: f32,
+    pub ambient_strength: f32,
+    pub view_transform: ViewTransform,
+    pub exposure: f32,
     pub mesh_vertices: Vec<Vertex>,
     pub mesh_indices: Vec<u32>,
     vertex_buffer: wgpu::Buffer,
@@ -116,7 +151,7 @@ impl Viewport {
         // Setup camera and uniforms
         let camera = Camera::new(aspect);
         let mut camera_uniform = CameraUniform::new();
-        camera_uniform.update_view_proj(&camera, 0.0);
+        camera_uniform.update_view_proj(&camera, 0.0, 1.0, 0.25, ViewTransform::Standard, 1.0);
 
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Camera Uniform Buffer"),
@@ -210,6 +245,10 @@ impl Viewport {
         Self {
             camera,
             light_angle: 0.0,
+            light_intensity: 1.0,
+            ambient_strength: 0.25,
+            view_transform: ViewTransform::Standard,
+            exposure: 1.0,
             mesh_vertices,
             mesh_indices,
             vertex_buffer,
@@ -222,8 +261,31 @@ impl Viewport {
         }
     }
 
+    pub fn set_mesh(&mut self, device: &wgpu::Device, vertices: Vec<Vertex>, indices: Vec<u32>) {
+        self.num_indices = indices.len() as u32;
+        self.vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Dynamic Mesh Vertex Buffer"),
+            contents: bytemuck::cast_slice(&vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        self.index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Dynamic Mesh Index Buffer"),
+            contents: bytemuck::cast_slice(&indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        self.mesh_vertices = vertices;
+        self.mesh_indices = indices;
+    }
+
     pub fn update_camera(&mut self, queue: &wgpu::Queue) {
-        self.camera_uniform.update_view_proj(&self.camera, self.light_angle);
+        self.camera_uniform.update_view_proj(
+            &self.camera,
+            self.light_angle,
+            self.light_intensity,
+            self.ambient_strength,
+            self.view_transform,
+            self.exposure,
+        );
         queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[self.camera_uniform]));
     }
 

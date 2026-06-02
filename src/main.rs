@@ -9,7 +9,7 @@ use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::WindowBuilder;
 
 fn main() {
-    env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
+    env_logger::init_from_env(env_logger::Env::default().default_filter_or("info,wgpu_hal::vulkan::conv=error"));
     log::info!("Starting Antigravity DCC Painter...");
 
     let event_loop = EventLoop::new().unwrap();
