@@ -1,0 +1,14 @@
+[package]
+name = "dcc-painter"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wgpu = "0.20.0"
+winit = "0.29.10"
+glam = "0.25.0"
+bytemuck = { version = "1.16.0", features = ["derive"] }
+image = "0.25.1"
+pollster = "0.3.0"
+log = "0.4.21"
+env_logger = "0.11.3"
