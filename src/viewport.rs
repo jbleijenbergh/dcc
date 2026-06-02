@@ -1,6 +1,7 @@
 use wgpu::util::DeviceExt;
 use glam::{Mat4, Vec3};
-use crate::mesh::{Vertex, create_sphere};
+use crate::mesh::Vertex;
+use std::sync::Arc;
 
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
@@ -114,11 +115,8 @@ pub struct Viewport {
     pub ambient_strength: f32,
     pub view_transform: ViewTransform,
     pub exposure: f32,
-    pub mesh_vertices: Vec<Vertex>,
-    pub mesh_indices: Vec<u32>,
-    vertex_buffer: wgpu::Buffer,
-    index_buffer: wgpu::Buffer,
-    num_indices: u32,
+    pub document: crate::mesh::Document,
+    pub node_bind_group_layout: Arc<wgpu::BindGroupLayout>,
     render_pipeline: wgpu::RenderPipeline,
     camera_uniform: CameraUniform,
     camera_buffer: wgpu::Buffer,
@@ -132,22 +130,6 @@ impl Viewport {
         aspect: f32,
         texture_bind_group_layout: &wgpu::BindGroupLayout,
     ) -> Self {
-        // Generate procedural sphere mesh
-        let (mesh_vertices, mesh_indices) = create_sphere(1.5, 32, 32);
-        let num_indices = mesh_indices.len() as u32;
-
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Sphere Vertex Buffer"),
-            contents: bytemuck::cast_slice(&mesh_vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Sphere Index Buffer"),
-            contents: bytemuck::cast_slice(&mesh_indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
-
         // Setup camera and uniforms
         let camera = Camera::new(aspect);
         let mut camera_uniform = CameraUniform::new();
@@ -183,6 +165,26 @@ impl Viewport {
             label: Some("Camera Bind Group"),
         });
 
+        // Setup node uniform bind group layout
+        let node_bind_group_layout = Arc::new(
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+                label: Some("Node Bind Group Layout"),
+            })
+        );
+
+        // Generate procedural sphere document
+        let document = crate::mesh::create_sphere_document(device, &node_bind_group_layout, 1.5, 32, 32);
+
         // Load shader
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("3D Mesh Shader"),
@@ -191,11 +193,11 @@ impl Viewport {
             ))),
         });
 
-        // Pipeline layout
+        // Pipeline layout includes Group 0 (Camera), Group 1 (Texture), Group 2 (Node)
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("3D Mesh Render Pipeline Layout"),
-                bind_group_layouts: &[&camera_bind_group_layout, texture_bind_group_layout],
+                bind_group_layouts: &[&camera_bind_group_layout, texture_bind_group_layout, &*node_bind_group_layout],
                 push_constant_ranges: &[],
             });
 
@@ -249,11 +251,8 @@ impl Viewport {
             ambient_strength: 0.25,
             view_transform: ViewTransform::Standard,
             exposure: 1.0,
-            mesh_vertices,
-            mesh_indices,
-            vertex_buffer,
-            index_buffer,
-            num_indices,
+            document,
+            node_bind_group_layout,
             render_pipeline,
             camera_uniform,
             camera_buffer,
@@ -261,20 +260,8 @@ impl Viewport {
         }
     }
 
-    pub fn set_mesh(&mut self, device: &wgpu::Device, vertices: Vec<Vertex>, indices: Vec<u32>) {
-        self.num_indices = indices.len() as u32;
-        self.vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Dynamic Mesh Vertex Buffer"),
-            contents: bytemuck::cast_slice(&vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        self.index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Dynamic Mesh Index Buffer"),
-            contents: bytemuck::cast_slice(&indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
-        self.mesh_vertices = vertices;
-        self.mesh_indices = indices;
+    pub fn set_document(&mut self, document: crate::mesh::Document) {
+        self.document = document;
     }
 
     pub fn update_camera(&mut self, queue: &wgpu::Queue) {
@@ -287,6 +274,13 @@ impl Viewport {
             self.exposure,
         );
         queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[self.camera_uniform]));
+    }
+
+    pub fn update_node_transforms(&self, queue: &wgpu::Queue) {
+        let nodes = self.document.get_active_nodes();
+        for (node, world_matrix) in &nodes {
+            node.update_gpu_transform(queue, *world_matrix);
+        }
     }
 
     pub fn render(
@@ -326,9 +320,18 @@ impl Viewport {
         render_pass.set_pipeline(&self.render_pipeline);
         render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
         render_pass.set_bind_group(1, texture_bind_group, &[]);
-        render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-        render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-        render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
+
+        let nodes = self.document.get_active_nodes();
+        for (node, _) in &nodes {
+            if let Some(ref mesh) = node.mesh {
+                render_pass.set_bind_group(2, &node.bind_group, &[]);
+                for primitive in &mesh.primitives {
+                    render_pass.set_vertex_buffer(0, primitive.vertex_buffer.slice(..));
+                    render_pass.set_index_buffer(primitive.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                    render_pass.draw_indexed(0..primitive.num_indices, 0, 0..1);
+                }
+            }
+        }
     }
 }
 

@@ -46,18 +46,21 @@ fn main() {
                             state.resize(window.inner_size());
                         }
                         winit::event::WindowEvent::RedrawRequested => {
-                            state.update();
-                            match state.render() {
-                                Ok(_) => {}
-                                Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                                    state.resize(state.size);
-                                }
-                                Err(wgpu::SurfaceError::OutOfMemory) => {
-                                    log::error!("OutOfMemory! Exiting.");
-                                    elwt.exit();
-                                }
-                                Err(e) => {
-                                    log::error!("Render error: {:?}", e);
+                            let size = window.inner_size();
+                            if size.width > 0 && size.height > 0 {
+                                state.update();
+                                match state.render() {
+                                    Ok(_) => {}
+                                    Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                                        state.resize(state.size);
+                                    }
+                                    Err(wgpu::SurfaceError::OutOfMemory) => {
+                                        log::error!("OutOfMemory! Exiting.");
+                                        elwt.exit();
+                                    }
+                                    Err(e) => {
+                                        log::error!("Render error: {:?}", e);
+                                    }
                                 }
                             }
                         }
@@ -65,7 +68,10 @@ fn main() {
                     }
                 }
                 winit::event::Event::AboutToWait => {
-                    window.request_redraw();
+                    let size = window.inner_size();
+                    if size.width > 0 && size.height > 0 {
+                        window.request_redraw();
+                    }
                 }
                 _ => {}
             }

@@ -1,5 +1,4 @@
 use glam::{Vec2, Vec3, Vec4, Mat4, Vec4Swizzles};
-use crate::mesh::Vertex;
 
 pub struct Ray {
     pub origin: Vec3,
@@ -45,26 +44,52 @@ pub struct RaycastHit {
     pub point: Vec3,
 }
 
-pub fn intersect_mesh(
+pub fn intersect_document(
     ray: &Ray,
-    vertices: &[Vertex],
-    indices: &[u32],
+    document: &crate::mesh::Document,
 ) -> Option<RaycastHit> {
     let mut closest_hit: Option<RaycastHit> = None;
 
-    // Check every triangle
-    for chunk in indices.chunks_exact(3) {
+    let nodes = document.get_active_nodes();
+    for (node, world_matrix) in &nodes {
+        if let Some(ref mesh) = node.mesh {
+            for primitive in &mesh.primitives {
+                if let Some(hit) = intersect_primitive(ray, primitive, *world_matrix) {
+                    if let Some(ref current) = closest_hit {
+                        if hit.distance < current.distance {
+                            closest_hit = Some(hit);
+                        }
+                    } else {
+                        closest_hit = Some(hit);
+                    }
+                }
+            }
+        }
+    }
+
+    closest_hit
+}
+
+pub fn intersect_primitive(
+    ray: &Ray,
+    primitive: &crate::mesh::Primitive,
+    world_matrix: Mat4,
+) -> Option<RaycastHit> {
+    let mut closest_hit: Option<RaycastHit> = None;
+
+    for chunk in primitive.indices.chunks_exact(3) {
         let i0 = chunk[0] as usize;
         let i1 = chunk[1] as usize;
         let i2 = chunk[2] as usize;
 
-        let v0 = &vertices[i0];
-        let v1 = &vertices[i1];
-        let v2 = &vertices[i2];
+        let v0 = &primitive.vertices[i0];
+        let v1 = &primitive.vertices[i1];
+        let v2 = &primitive.vertices[i2];
 
-        let p0 = Vec3::from(v0.position);
-        let p1 = Vec3::from(v1.position);
-        let p2 = Vec3::from(v2.position);
+        // Transform vertices to world space
+        let p0 = world_matrix.transform_point3(Vec3::from(v0.position));
+        let p1 = world_matrix.transform_point3(Vec3::from(v1.position));
+        let p2 = world_matrix.transform_point3(Vec3::from(v2.position));
 
         // Möller-Trumbore intersection algorithm
         let e1 = p1 - p0;

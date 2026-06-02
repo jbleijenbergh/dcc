@@ -638,7 +638,7 @@ impl Painter {
         ];
 
         let uv_radius_x = radius / self.width as f32;
-        let mut add_stamp = |instances: &mut Vec<StampInstance>, x: f32, y: f32| {
+        let add_stamp = |instances: &mut Vec<StampInstance>, x: f32, y: f32| {
             instances.push(StampInstance {
                 position: [x, y],
                 color: color_f32,

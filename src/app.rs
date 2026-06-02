@@ -11,7 +11,7 @@ pub enum Tool {
 
 pub struct State {
     surface: wgpu::Surface<'static>,
-    device: wgpu::Device,
+    device: Arc<wgpu::Device>,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     pub size: winit::dpi::PhysicalSize<u32>,
@@ -52,6 +52,10 @@ pub struct State {
 
     // Stroke tracking
     last_hit_uv: Option<glam::Vec2>,
+
+    // Async loading state
+    gltf_rx: Option<std::sync::mpsc::Receiver<Result<(crate::mesh::Document, String), String>>>,
+    is_loading_gltf: bool,
 }
 
 impl State {
@@ -86,6 +90,7 @@ impl State {
             )
             .await
             .unwrap();
+        let device = Arc::new(device);
 
         let surface_caps = surface.get_capabilities(&adapter);
         let surface_format = surface_caps
@@ -170,6 +175,8 @@ impl State {
             is_space_pressed: false,
             is_alt_pressed: false,
             last_hit_uv: None,
+            gltf_rx: None,
+            is_loading_gltf: false,
         }
     }
 
@@ -357,10 +364,9 @@ impl State {
         let mut brush_rgba = self.brush_color;
         brush_rgba[3] = (self.brush_opacity * 255.0) as u8;
 
-        if let Some(hit) = crate::raycast::intersect_mesh(
+        if let Some(hit) = crate::raycast::intersect_document(
             &ray,
-            &self.viewport.mesh_vertices,
-            &self.viewport.mesh_indices,
+            &self.viewport.document,
         ) {
             if let Some(last_uv) = self.last_hit_uv {
                 self.painter.paint_stroke(
@@ -401,12 +407,12 @@ impl State {
     }
 
     fn toggle_mesh(&mut self, mode: &str) {
-        let (vertices, indices) = match mode {
-            "Cube" => crate::mesh::create_cube(2.0),
-            "Plane" => crate::mesh::create_plane(2.5),
-            _ => crate::mesh::create_sphere(1.5, 32, 32),
+        let doc = match mode {
+            "Cube" => crate::mesh::create_cube_document(&self.device, &self.viewport.node_bind_group_layout, 2.0),
+            "Plane" => crate::mesh::create_plane_document(&self.device, &self.viewport.node_bind_group_layout, 2.5),
+            _ => crate::mesh::create_sphere_document(&self.device, &self.viewport.node_bind_group_layout, 1.5, 32, 32),
         };
-        self.viewport.set_mesh(&self.device, vertices, indices);
+        self.viewport.set_document(doc);
         log::info!("Switched geometry to {}", mode);
     }
 
@@ -415,8 +421,54 @@ impl State {
         self.painter.export_png(&self.device, &self.queue, path);
     }
 
+    fn load_gltf_file(&mut self, path: &std::path::Path) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.gltf_rx = Some(rx);
+        self.is_loading_gltf = true;
+
+        let path = path.to_path_buf();
+        let device = self.device.clone();
+        let layout = self.viewport.node_bind_group_layout.clone();
+        let window = self.window.clone();
+
+        std::thread::spawn(move || {
+            let res = crate::mesh::load_gltf(&device, &layout, &path)
+                .map(|doc| (doc, path.file_name().unwrap_or_default().to_string_lossy().to_string()));
+            let _ = tx.send(res);
+            window.request_redraw();
+        });
+    }
+
+    fn focus_camera_on_model(&mut self) {
+        if let Some((min, max)) = self.viewport.document.compute_bounds() {
+            let center = (min + max) * 0.5;
+            let size = max - min;
+            let max_dim = size.x.max(size.y).max(size.z);
+            
+            self.viewport.camera.target = center;
+            self.viewport.camera.distance = (max_dim * 1.5).max(1.0);
+            log::info!("Focused camera at center: {:?}, distance: {}", center, self.viewport.camera.distance);
+        }
+    }
+
     pub fn update(&mut self) {
-        // Removed auto-rotation so user can control light angle via UI slider.
+        if let Some(ref rx) = self.gltf_rx {
+            if let Ok(res) = rx.try_recv() {
+                self.is_loading_gltf = false;
+                self.gltf_rx = None;
+                match res {
+                    Ok((doc, filename)) => {
+                        self.viewport.set_document(doc);
+                        self.current_mesh_type = filename;
+                        self.focus_camera_on_model();
+                        log::info!("Successfully loaded glTF model asynchronously");
+                    }
+                    Err(e) => {
+                        log::error!("Failed to load glTF model: {}", e);
+                    }
+                }
+            }
+        }
     }
 
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -427,11 +479,22 @@ impl State {
         let mut export_requested = false;
         let mut clear_requested = false;
         let mut geometry_to_switch = None;
+        let mut gltf_to_load = None;
 
         // Top Menu Bar
         egui::TopBottomPanel::top("top_menu").show(&self.egui_ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
+                    if ui.button("Open glTF Model...").clicked() {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("glTF Model", &["gltf", "glb"])
+                            .pick_file()
+                        {
+                            gltf_to_load = Some(path);
+                        }
+                        ui.close_menu();
+                    }
+                    ui.separator();
                     if ui.button("Clear Canvas").clicked() {
                         clear_requested = true;
                         ui.close_menu();
@@ -462,6 +525,25 @@ impl State {
                             geometry_to_switch = Some("Plane");
                         }
                     });
+
+                if self.viewport.document.scenes.len() > 1 {
+                    ui.separator();
+                    ui.label("Scene:");
+                    let active_idx = self.viewport.document.active_scene_idx;
+                    let scene_name = self.viewport.document.scenes[active_idx].name
+                        .clone()
+                        .unwrap_or_else(|| format!("Scene {}", active_idx));
+                    egui::ComboBox::from_id_source("scene_select")
+                        .selected_text(&scene_name)
+                        .show_ui(ui, |ui| {
+                            for (idx, scene) in self.viewport.document.scenes.iter().enumerate() {
+                                let name = scene.name.clone().unwrap_or_else(|| format!("Scene {}", idx));
+                                if ui.selectable_value(&mut self.viewport.document.active_scene_idx, idx, name).changed() {
+                                    log::info!("Switched active scene to index {}", idx);
+                                }
+                            }
+                        });
+                }
             });
         });
 
@@ -670,6 +752,37 @@ impl State {
             self.toggle_mesh(mesh_type);
         }
 
+        if let Some(path) = gltf_to_load {
+            self.load_gltf_file(&path);
+        }
+
+        if self.is_loading_gltf {
+            egui::Window::new("Loading Model")
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .collapsible(false)
+                .resizable(false)
+                .movable(false)
+                .title_bar(false)
+                .frame(egui::Frame::window(&self.egui_ctx.style())
+                    .fill(egui::Color32::from_black_alpha(200))
+                    .inner_margin(25.0)
+                    .rounding(12.0))
+                .show(&self.egui_ctx, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add(egui::Spinner::new().size(50.0));
+                        ui.add_space(15.0);
+                        ui.label(egui::RichText::new("Loading glTF Model...")
+                            .size(18.0)
+                            .color(egui::Color32::WHITE)
+                            .strong());
+                        ui.add_space(8.0);
+                        ui.label(egui::RichText::new("Reading and compiling model resources in the background")
+                            .size(12.0)
+                            .color(egui::Color32::LIGHT_GRAY));
+                    });
+                });
+        }
+
         let egui_output = self.egui_ctx.end_frame();
         let paint_jobs = self.egui_ctx.tessellate(egui_output.shapes, egui_output.pixels_per_point);
 
@@ -701,6 +814,7 @@ impl State {
 
         // Update uniforms on GPU
         self.viewport.update_camera(&self.queue);
+        self.viewport.update_node_transforms(&self.queue);
 
         // 3. Render 3D Viewport
         self.viewport.render(

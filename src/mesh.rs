@@ -243,3 +243,346 @@ pub fn create_plane(size: f32) -> (Vec<Vertex>, Vec<u32>) {
     (vertices, indices)
 }
 
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct NodeUniform {
+    pub model_matrix: [[f32; 4]; 4],
+    pub normal_matrix: [[f32; 4]; 4],
+}
+
+pub struct Primitive {
+    pub vertices: Vec<Vertex>,
+    pub indices: Vec<u32>,
+    pub vertex_buffer: wgpu::Buffer,
+    pub index_buffer: wgpu::Buffer,
+    pub num_indices: u32,
+}
+
+impl Primitive {
+    pub fn new(device: &wgpu::Device, vertices: Vec<Vertex>, indices: Vec<u32>, label: &str) -> Self {
+        use wgpu::util::DeviceExt;
+        let num_indices = indices.len() as u32;
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some(&format!("{} Primitive Vertex Buffer", label)),
+            contents: bytemuck::cast_slice(&vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some(&format!("{} Primitive Index Buffer", label)),
+            contents: bytemuck::cast_slice(&indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        Self {
+            vertices,
+            indices,
+            vertex_buffer,
+            index_buffer,
+            num_indices,
+        }
+    }
+}
+
+pub struct Mesh {
+    pub primitives: Vec<Primitive>,
+}
+
+pub struct Node {
+    pub name: Option<String>,
+    pub translation: glam::Vec3,
+    pub rotation: glam::Quat,
+    pub scale: glam::Vec3,
+    pub mesh: Option<Mesh>,
+    pub children: Vec<usize>,
+    pub uniform_buffer: wgpu::Buffer,
+    pub bind_group: wgpu::BindGroup,
+}
+
+impl Node {
+    pub fn local_transform(&self) -> glam::Mat4 {
+        glam::Mat4::from_scale_rotation_translation(self.scale, self.rotation, self.translation)
+    }
+
+    pub fn update_gpu_transform(&self, queue: &wgpu::Queue, world_matrix: glam::Mat4) {
+        let normal_matrix = world_matrix.inverse().transpose();
+        let uniform = NodeUniform {
+            model_matrix: world_matrix.to_cols_array_2d(),
+            normal_matrix: normal_matrix.to_cols_array_2d(),
+        };
+        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[uniform]));
+    }
+}
+
+pub struct Scene {
+    pub name: Option<String>,
+    pub root_nodes: Vec<usize>,
+}
+
+pub struct Document {
+    pub scenes: Vec<Scene>,
+    pub nodes: Vec<Node>,
+    pub active_scene_idx: usize,
+}
+
+impl Document {
+    pub fn from_single_primitive(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        vertices: Vec<Vertex>,
+        indices: Vec<u32>,
+        label: &str,
+    ) -> Self {
+        let primitive = Primitive::new(device, vertices, indices, label);
+        let mesh = Mesh {
+            primitives: vec![primitive],
+        };
+
+        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(&format!("{} Node Uniform Buffer", label)),
+            size: 128, // 2 * 64 bytes
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            }],
+            label: Some(&format!("{} Node Bind Group", label)),
+        });
+
+        let node = Node {
+            name: Some(label.to_string()),
+            translation: glam::Vec3::ZERO,
+            rotation: glam::Quat::IDENTITY,
+            scale: glam::Vec3::ONE,
+            mesh: Some(mesh),
+            children: vec![],
+            uniform_buffer,
+            bind_group,
+        };
+
+        let scene = Scene {
+            name: Some("Default Scene".to_string()),
+            root_nodes: vec![0],
+        };
+
+        Self {
+            scenes: vec![scene],
+            nodes: vec![node],
+            active_scene_idx: 0,
+        }
+    }
+
+    pub fn get_active_nodes(&self) -> Vec<(&Node, glam::Mat4)> {
+        let mut list = Vec::new();
+        if self.scenes.is_empty() {
+            return list;
+        }
+        let scene = &self.scenes[self.active_scene_idx];
+        for &root_idx in &scene.root_nodes {
+            self.collect_nodes_recursive(root_idx, glam::Mat4::IDENTITY, &mut list);
+        }
+        list
+    }
+
+    fn collect_nodes_recursive<'a>(&'a self, node_idx: usize, parent_world: glam::Mat4, list: &mut Vec<(&'a Node, glam::Mat4)>) {
+        if node_idx >= self.nodes.len() {
+            return;
+        }
+        let node = &self.nodes[node_idx];
+        let world = parent_world * node.local_transform();
+        list.push((node, world));
+        for &child_idx in &node.children {
+            self.collect_nodes_recursive(child_idx, world, list);
+        }
+    }
+
+    pub fn compute_bounds(&self) -> Option<(glam::Vec3, glam::Vec3)> {
+        let mut min = glam::Vec3::splat(f32::MAX);
+        let mut max = glam::Vec3::splat(f32::MIN);
+        let mut has_vertices = false;
+
+        let nodes = self.get_active_nodes();
+        for (node, world_matrix) in &nodes {
+            if let Some(ref mesh) = node.mesh {
+                for primitive in &mesh.primitives {
+                    for vertex in &primitive.vertices {
+                        let p = world_matrix.transform_point3(glam::Vec3::from(vertex.position));
+                        min = min.min(p);
+                        max = max.max(p);
+                        has_vertices = true;
+                    }
+                }
+            }
+        }
+
+        if has_vertices {
+            Some((min, max))
+        } else {
+            None
+        }
+    }
+}
+
+pub fn create_sphere_document(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    radius: f32,
+    rings: u32,
+    sectors: u32,
+) -> Document {
+    let (vertices, indices) = create_sphere(radius, rings, sectors);
+    Document::from_single_primitive(device, layout, vertices, indices, "Sphere")
+}
+
+pub fn create_cube_document(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    size: f32,
+) -> Document {
+    let (vertices, indices) = create_cube(size);
+    Document::from_single_primitive(device, layout, vertices, indices, "Cube")
+}
+
+pub fn create_plane_document(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    size: f32,
+) -> Document {
+    let (vertices, indices) = create_plane(size);
+    Document::from_single_primitive(device, layout, vertices, indices, "Plane")
+}
+
+pub fn load_gltf(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    path: &std::path::Path,
+) -> Result<Document, String> {
+    let file = std::fs::File::open(path)
+        .map_err(|e| format!("Failed to open glTF/GLB file: {}", e))?;
+    let mmap = unsafe { memmap2::MmapOptions::new().map(&file) }
+        .map_err(|e| format!("Failed to memory map file: {}", e))?;
+    let (doc, buffers, _) = match gltf::import_slice(&mmap) {
+        Ok(data) => data,
+        Err(_) => {
+            // Fall back to standard import to handle external references
+            gltf::import(path)
+                .map_err(|e| format!("Failed to import glTF: {}", e))?
+        }
+    };
+
+    let mut nodes = Vec::new();
+
+    for gltf_node in doc.nodes() {
+        let name = gltf_node.name().map(|s| s.to_string());
+        let (translation, rotation, scale) = gltf_node.transform().decomposed();
+        let translation = glam::Vec3::from_array(translation);
+        let rotation = glam::Quat::from_array(rotation);
+        let scale = glam::Vec3::from_array(scale);
+
+        let mesh = if let Some(gltf_mesh) = gltf_node.mesh() {
+            let mut primitives = Vec::new();
+            for (prim_idx, primitive) in gltf_mesh.primitives().enumerate() {
+                let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
+
+                let positions = reader.read_positions().map(|p| p.collect::<Vec<_>>());
+                let norm_vec = reader.read_normals().map(|n| n.collect::<Vec<_>>());
+                let uv_vec = reader.read_tex_coords(0).map(|t| t.into_f32().collect::<Vec<_>>());
+                
+                let indices = if let Some(ind_iter) = reader.read_indices() {
+                    ind_iter.into_u32().collect::<Vec<u32>>()
+                } else {
+                    let pos_len = positions.as_ref().map(|p| p.len()).unwrap_or(0);
+                    (0..pos_len as u32).collect()
+                };
+
+                let mut vertices = Vec::new();
+                if let Some(pos_vec) = positions {
+                    let computed_normals = if norm_vec.is_none() {
+                        let mut normals = vec![[0.0, 1.0, 0.0]; pos_vec.len()];
+                        for chunk in indices.chunks_exact(3) {
+                            let i0 = chunk[0] as usize;
+                            let i1 = chunk[1] as usize;
+                            let i2 = chunk[2] as usize;
+                            if i0 < pos_vec.len() && i1 < pos_vec.len() && i2 < pos_vec.len() {
+                                let p0 = glam::Vec3::from(pos_vec[i0]);
+                                let p1 = glam::Vec3::from(pos_vec[i1]);
+                                let p2 = glam::Vec3::from(pos_vec[i2]);
+                                let normal = (p1 - p0).cross(p2 - p0).normalize_or_zero().into();
+                                normals[i0] = normal;
+                                normals[i1] = normal;
+                                normals[i2] = normal;
+                            }
+                        }
+                        Some(normals)
+                    } else {
+                        norm_vec
+                    };
+
+                    for (i, &p) in pos_vec.iter().enumerate() {
+                        let n = computed_normals.as_ref().map(|ns| ns[i]).unwrap_or([0.0, 1.0, 0.0]);
+                        let uv = uv_vec.as_ref().map(|uvs| uvs[i]).unwrap_or([0.0, 0.0]);
+                        vertices.push(Vertex {
+                            position: p,
+                            normal: n,
+                            tex_coords: uv,
+                        });
+                    }
+                }
+
+                let prim_label = format!("{}_Mesh_{}_Prim_{}", name.as_deref().unwrap_or("Node"), gltf_mesh.index(), prim_idx);
+                primitives.push(Primitive::new(device, vertices, indices, &prim_label));
+            }
+            Some(Mesh { primitives })
+        } else {
+            None
+        };
+
+        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(&format!("{} Node Uniform Buffer", name.as_deref().unwrap_or("GLTF"))),
+            size: 128,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            }],
+            label: Some(&format!("{} Node Bind Group", name.as_deref().unwrap_or("GLTF"))),
+        });
+
+        let children = gltf_node.children().map(|c| c.index()).collect();
+
+        nodes.push(Node {
+            name,
+            translation,
+            rotation,
+            scale,
+            mesh,
+            children,
+            uniform_buffer,
+            bind_group,
+        });
+    }
+
+    let mut scenes = Vec::new();
+    for gltf_scene in doc.scenes() {
+        let name = gltf_scene.name().map(|s| s.to_string());
+        let root_nodes = gltf_scene.nodes().map(|n| n.index()).collect();
+        scenes.push(Scene { name, root_nodes });
+    }
+
+    let active_scene_idx = doc.default_scene().map(|s| s.index()).unwrap_or(0);
+
+    Ok(Document {
+        scenes,
+        nodes,
+        active_scene_idx,
+    })
+}
+
