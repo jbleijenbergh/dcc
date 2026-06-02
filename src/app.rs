@@ -56,6 +56,9 @@ pub struct State {
     // Async loading state
     gltf_rx: Option<std::sync::mpsc::Receiver<Result<(crate::mesh::Document, String), String>>>,
     is_loading_gltf: bool,
+
+    // Paint scheduling
+    needs_paint: bool,
 }
 
 impl State {
@@ -177,6 +180,7 @@ impl State {
             last_hit_uv: None,
             gltf_rx: None,
             is_loading_gltf: false,
+            needs_paint: false,
         }
     }
 
@@ -274,7 +278,7 @@ impl State {
                         } else {
                             // If we aren't navigation-dragging, paint immediately on click
                             if !self.is_space_pressed && !self.is_alt_pressed {
-                                self.paint_at_cursor();
+                                self.needs_paint = true;
                             }
                         }
                         true
@@ -306,7 +310,7 @@ impl State {
                         self.last_hit_uv = None; // Break stroke
                     } else {
                         // Paint on model (normal left-drag)
-                        self.paint_at_cursor();
+                        self.needs_paint = true;
                     }
                     return true;
                 }
@@ -346,6 +350,8 @@ impl State {
             return;
         }
 
+        let start_time = std::time::Instant::now();
+
         let mouse_pos = glam::Vec2::new(self.last_mouse_pos.x as f32, self.last_mouse_pos.y as f32);
         let screen_size = glam::Vec2::new(self.size.width as f32, self.size.height as f32);
 
@@ -364,10 +370,15 @@ impl State {
         let mut brush_rgba = self.brush_color;
         brush_rgba[3] = (self.brush_opacity * 255.0) as u8;
 
-        if let Some(hit) = crate::raycast::intersect_document(
+        let raycast_start = std::time::Instant::now();
+        let hit_opt = crate::raycast::intersect_document(
             &ray,
             &self.viewport.document,
-        ) {
+        );
+        let raycast_duration = raycast_start.elapsed();
+
+        if let Some(hit) = hit_opt {
+            let paint_start = std::time::Instant::now();
             if let Some(last_uv) = self.last_hit_uv {
                 self.painter.paint_stroke(
                     &self.device,
@@ -400,7 +411,15 @@ impl State {
                     is_eraser,
                 );
             }
+            let paint_duration = paint_start.elapsed();
             self.last_hit_uv = Some(hit.uv);
+
+            log::info!(
+                "Paint stroke timing: raycast={:?}, paint={:?}, total={:?}",
+                raycast_duration,
+                paint_duration,
+                start_time.elapsed()
+            );
         } else {
             self.last_hit_uv = None;
         }
@@ -452,6 +471,11 @@ impl State {
     }
 
     pub fn update(&mut self) {
+        if self.needs_paint {
+            self.paint_at_cursor();
+            self.needs_paint = false;
+        }
+
         if let Some(ref rx) = self.gltf_rx {
             if let Ok(res) = rx.try_recv() {
                 self.is_loading_gltf = false;
