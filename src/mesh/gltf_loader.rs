@@ -86,6 +86,45 @@ fn parse_gltf_json(path: &std::path::Path) -> Option<serde_json::Value> {
     None
 }
 
+fn diagnose_missing_assets(path: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut missing = Vec::new();
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new(""));
+    let json_val = match parse_gltf_json(path) {
+        Some(val) => val,
+        None => return missing,
+    };
+
+    // Check buffers
+    if let Some(buffers) = json_val.get("buffers").and_then(|b| b.as_array()) {
+        for buf in buffers {
+            if let Some(uri) = buf.get("uri").and_then(|u| u.as_str()) {
+                if !uri.starts_with("data:") {
+                    let buf_path = parent.join(uri);
+                    if !buf_path.exists() {
+                        missing.push(buf_path);
+                    }
+                }
+            }
+        }
+    }
+
+    // Check images
+    if let Some(images) = json_val.get("images").and_then(|i| i.as_array()) {
+        for img in images {
+            if let Some(uri) = img.get("uri").and_then(|u| u.as_str()) {
+                if !uri.starts_with("data:") {
+                    let img_path = parent.join(uri);
+                    if !img_path.exists() {
+                        missing.push(img_path);
+                    }
+                }
+            }
+        }
+    }
+
+    missing
+}
+
 pub fn load_gltf(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
@@ -100,7 +139,21 @@ pub fn load_gltf(
         Err(_) => {
             // Fall back to standard import to handle external references
             gltf::import(path)
-                .map_err(|e| format!("Failed to import glTF: {}", e))?
+                .map_err(|e| {
+                    let missing = diagnose_missing_assets(path);
+                    if !missing.is_empty() {
+                        let missing_strs: Vec<String> = missing.iter()
+                            .map(|p| p.to_string_lossy().to_string())
+                            .collect();
+                        format!(
+                            "Failed to import glTF: {}. Missing referenced file(s): {}",
+                            e,
+                            missing_strs.join(", ")
+                        )
+                    } else {
+                        format!("Failed to import glTF: {}", e)
+                    }
+                })?
         }
     };
 
@@ -493,6 +546,41 @@ mod tests {
             }
             assert!(found_volume, "Should have found KHR_materials_volume extension");
             assert!(found_transmission, "Should have found KHR_materials_transmission extension");
+        }
+
+        #[test]
+        fn test_diagnose_missing_assets() {
+            let temp_dir = std::env::temp_dir();
+            let gltf_path = temp_dir.join("temp_test_model.gltf");
+            
+            let gltf_content = r#"{
+                "asset": {
+                    "version": "2.0"
+                },
+                "buffers": [
+                    {
+                        "uri": "non_existent_buffer.bin",
+                        "byteLength": 1024
+                    }
+                ],
+                "images": [
+                    {
+                        "uri": "non_existent_image.png"
+                    }
+                ]
+            }"#;
+            
+            std::fs::write(&gltf_path, gltf_content).unwrap();
+            
+            let missing = diagnose_missing_assets(&gltf_path);
+            let _ = std::fs::remove_file(&gltf_path);
+            
+            assert_eq!(missing.len(), 2);
+            let missing_names: Vec<String> = missing.iter()
+                .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+                .collect();
+            assert!(missing_names.contains(&"non_existent_buffer.bin".to_string()));
+            assert!(missing_names.contains(&"non_existent_image.png".to_string()));
         }
     }
 }

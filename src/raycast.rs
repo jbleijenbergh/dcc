@@ -70,13 +70,68 @@ pub fn intersect_document(
     closest_hit
 }
 
+pub fn intersect_aabb(ray: &Ray, min: Vec3, max: Vec3) -> bool {
+    let mut tmin = f32::MIN;
+    let mut tmax = f32::MAX;
+
+    // X slab
+    if ray.direction.x.abs() > 1e-6 {
+        let t1 = (min.x - ray.origin.x) / ray.direction.x;
+        let t2 = (max.x - ray.origin.x) / ray.direction.x;
+        tmin = tmin.max(t1.min(t2));
+        tmax = tmax.min(t1.max(t2));
+    } else if ray.origin.x < min.x || ray.origin.x > max.x {
+        return false;
+    }
+
+    // Y slab
+    if ray.direction.y.abs() > 1e-6 {
+        let t1 = (min.y - ray.origin.y) / ray.direction.y;
+        let t2 = (max.y - ray.origin.y) / ray.direction.y;
+        tmin = tmin.max(t1.min(t2));
+        tmax = tmax.min(t1.max(t2));
+    } else if ray.origin.y < min.y || ray.origin.y > max.y {
+        return false;
+    }
+
+    // Z slab
+    if ray.direction.z.abs() > 1e-6 {
+        let t1 = (min.z - ray.origin.z) / ray.direction.z;
+        let t2 = (max.z - ray.origin.z) / ray.direction.z;
+        tmin = tmin.max(t1.min(t2));
+        tmax = tmax.min(t1.max(t2));
+    } else if ray.origin.z < min.z || ray.origin.z > max.z {
+        return false;
+    }
+
+    tmax >= tmin && tmax > 0.0
+}
+
 pub fn intersect_primitive(
     ray: &Ray,
     primitive: &crate::mesh::Primitive,
     world_matrix: Mat4,
 ) -> Option<RaycastHit> {
+    // 1. Transform ray to primitive's local space
+    let inv_matrix = world_matrix.inverse();
+    let local_ray_dir = inv_matrix.transform_vector3(ray.direction);
+    let len = local_ray_dir.length();
+    if len < 1e-6 {
+        return None;
+    }
+    let local_ray = Ray {
+        origin: inv_matrix.transform_point3(ray.origin),
+        direction: local_ray_dir / len,
+    };
+
+    // 2. Perform fast local AABB check
+    if !intersect_aabb(&local_ray, primitive.bounds_min, primitive.bounds_max) {
+        return None;
+    }
+
     let mut closest_hit: Option<RaycastHit> = None;
 
+    // 3. Linearly test triangles in local space
     for chunk in primitive.indices.chunks_exact(3) {
         let i0 = chunk[0] as usize;
         let i1 = chunk[1] as usize;
@@ -86,24 +141,26 @@ pub fn intersect_primitive(
         let v1 = &primitive.vertices[i1];
         let v2 = &primitive.vertices[i2];
 
-        // Transform vertices to world space
-        let p0 = world_matrix.transform_point3(Vec3::from(v0.position));
-        let p1 = world_matrix.transform_point3(Vec3::from(v1.position));
-        let p2 = world_matrix.transform_point3(Vec3::from(v2.position));
+        let p0 = Vec3::from(v0.position);
+        let p1 = Vec3::from(v1.position);
+        let p2 = Vec3::from(v2.position);
 
-        if let Some((t, u, v)) = intersect_triangle(ray, p0, p1, p2) {
-            let hit_point = ray.origin + ray.direction * t;
+        if let Some((t_local, u, v)) = intersect_triangle(&local_ray, p0, p1, p2) {
+            // Transform hit point back to world space
+            let hit_local_point = local_ray.origin + local_ray.direction * t_local;
+            let hit_world_point = world_matrix.transform_point3(hit_local_point);
+            let t_world = (hit_world_point - ray.origin).length();
+
             let w = 1.0 - u - v;
-
             let uv0 = Vec2::from(v0.tex_coords);
             let uv1 = Vec2::from(v1.tex_coords);
             let uv2 = Vec2::from(v2.tex_coords);
             let hit_uv = uv0 * w + uv1 * u + uv2 * v;
 
             let hit = RaycastHit {
-                distance: t,
+                distance: t_world,
                 uv: hit_uv,
-                point: hit_point,
+                point: hit_world_point,
             };
 
             if let Some(ref current) = closest_hit {

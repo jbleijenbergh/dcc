@@ -50,6 +50,8 @@ pub struct Primitive {
     pub index_buffer: wgpu::Buffer,
     pub num_indices: u32,
     pub material_index: Option<usize>,
+    pub bounds_min: glam::Vec3,
+    pub bounds_max: glam::Vec3,
 }
 
 impl Primitive {
@@ -66,6 +68,15 @@ impl Primitive {
             contents: bytemuck::cast_slice(&indices),
             usage: wgpu::BufferUsages::INDEX,
         });
+
+        let mut bounds_min = glam::Vec3::splat(f32::MAX);
+        let mut bounds_max = glam::Vec3::splat(f32::MIN);
+        for v in &vertices {
+            let p = glam::Vec3::from(v.position);
+            bounds_min = bounds_min.min(p);
+            bounds_max = bounds_max.max(p);
+        }
+
         Self {
             vertices,
             indices,
@@ -73,6 +84,8 @@ impl Primitive {
             index_buffer,
             num_indices,
             material_index: None,
+            bounds_min,
+            bounds_max,
         }
     }
 
@@ -91,6 +104,16 @@ impl Primitive {
             contents: bytemuck::cast_slice(&self.indices),
             usage: wgpu::BufferUsages::INDEX,
         });
+
+        let mut bounds_min = glam::Vec3::splat(f32::MAX);
+        let mut bounds_max = glam::Vec3::splat(f32::MIN);
+        for v in &self.vertices {
+            let p = glam::Vec3::from(v.position);
+            bounds_min = bounds_min.min(p);
+            bounds_max = bounds_max.max(p);
+        }
+        self.bounds_min = bounds_min;
+        self.bounds_max = bounds_max;
     }
 }
 
@@ -500,6 +523,29 @@ mod tests {
             for v in vertices {
                 let len = glam::Vec3::from(v.position).length();
                 assert!((len - radius).abs() < 1e-4, "Vertex position length {} should be close to radius {}", len, radius);
+            }
+        }
+
+        #[test]
+        fn test_sphere_seam_alignment() {
+            let rings = 32;
+            let sectors = 32;
+            let (vertices, _indices) = create_sphere(1.5, rings, sectors);
+            for r in 0..rings {
+                let idx_start = (r * sectors) as usize;
+                let idx_end = (r * sectors + sectors - 1) as usize;
+                let v_start = &vertices[idx_start];
+                let v_end = &vertices[idx_end];
+                
+                // Compare positions
+                let p_start = glam::Vec3::from(v_start.position);
+                let p_end = glam::Vec3::from(v_end.position);
+                assert!((p_start - p_end).length() < 1e-5, "Ring {}: position mismatch {:?} vs {:?}", r, p_start, p_end);
+                
+                // Compare texture coordinates
+                assert!((v_start.tex_coords[0] - 0.0).abs() < 1e-5, "Ring {}: U start should be 0.0, got {}", r, v_start.tex_coords[0]);
+                assert!((v_end.tex_coords[0] - 1.0).abs() < 1e-5, "Ring {}: U end should be 1.0, got {}", r, v_end.tex_coords[0]);
+                assert!((v_start.tex_coords[1] - v_end.tex_coords[1]).abs() < 1e-5, "Ring {}: V mismatch {} vs {}", r, v_start.tex_coords[1], v_end.tex_coords[1]);
             }
         }
     }
