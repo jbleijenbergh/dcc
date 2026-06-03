@@ -243,11 +243,183 @@ pub fn create_plane(size: f32) -> (Vec<Vertex>, Vec<u32>) {
     (vertices, indices)
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SeamsOption {
+    GenerateMissing,
+    RecomputeAll,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MarginSize {
+    Small,
+    Medium,
+    Large,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum IslandOrientation {
+    Unconstrained,
+    AlignWith3DMesh,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ImportSettings {
+    pub seams_option: SeamsOption,
+    pub margin_size: MarginSize,
+    pub island_orientation: IslandOrientation,
+}
+
+pub struct BoxProjector;
+
+impl BoxProjector {
+    pub fn project(
+        vertices: &[Vertex],
+        indices: &[u32],
+        settings: &ImportSettings,
+    ) -> (Vec<Vertex>, Vec<u32>) {
+        let mut new_vertices = Vec::new();
+        let mut new_indices = Vec::new();
+        
+        let margin = match settings.margin_size {
+            MarginSize::Small => 0.01f32,
+            MarginSize::Medium => 0.03f32,
+            MarginSize::Large => 0.06f32,
+        };
+        
+        let num_triangles = indices.len() / 3;
+        let mut face_axes = Vec::with_capacity(num_triangles);
+        let mut projected_uvs = vec![[0.0f32; 2]; indices.len()];
+        
+        let mut u_min = [f32::MAX; 6];
+        let mut u_max = [f32::MIN; 6];
+        let mut v_min = [f32::MAX; 6];
+        let mut v_max = [f32::MIN; 6];
+        
+        for t in 0..num_triangles {
+            let i0 = indices[t * 3] as usize;
+            let i1 = indices[t * 3 + 1] as usize;
+            let i2 = indices[t * 3 + 2] as usize;
+            
+            let p0 = glam::Vec3::from(vertices[i0].position);
+            let p1 = glam::Vec3::from(vertices[i1].position);
+            let p2 = glam::Vec3::from(vertices[i2].position);
+            
+            let n = (p1 - p0).cross(p2 - p0).normalize_or_zero();
+            
+            let abs_n = n.abs();
+            let axis = if abs_n.x >= abs_n.y && abs_n.x >= abs_n.z {
+                if n.x > 0.0 { 0 } else { 1 }
+            } else if abs_n.y >= abs_n.x && abs_n.y >= abs_n.z {
+                if n.y > 0.0 { 2 } else { 3 }
+            } else {
+                if n.z > 0.0 { 4 } else { 5 }
+            };
+            
+            face_axes.push(axis);
+            
+            for (idx_offset, &v_idx) in [i0, i1, i2].iter().enumerate() {
+                let p = vertices[v_idx].position;
+                let (mut u_raw, mut v_raw) = match axis {
+                    0 => (p[2], p[1]),
+                    1 => (-p[2], p[1]),
+                    2 => (p[0], p[2]),
+                    3 => (p[0], -p[2]),
+                    4 => (-p[0], p[1]),
+                    5 => (p[0], p[1]),
+                    _ => unreachable!(),
+                };
+                
+                if let IslandOrientation::Unconstrained = settings.island_orientation {
+                    let angle = 30.0f32.to_radians();
+                    let cos_a = angle.cos();
+                    let sin_a = angle.sin();
+                    let u_rot = u_raw * cos_a - v_raw * sin_a;
+                    let v_rot = u_raw * sin_a + v_raw * cos_a;
+                    u_raw = u_rot;
+                    v_raw = v_rot;
+                }
+                
+                projected_uvs[t * 3 + idx_offset] = [u_raw, v_raw];
+                
+                u_min[axis] = u_min[axis].min(u_raw);
+                u_max[axis] = u_max[axis].max(u_raw);
+                v_min[axis] = v_min[axis].min(v_raw);
+                v_max[axis] = v_max[axis].max(v_raw);
+            }
+        }
+        
+        for t in 0..num_triangles {
+            let axis = face_axes[t];
+            let tile_idx = axis / 2; // 0, 1, or 2
+            let is_right = (axis % 2) == 1;
+            
+            let target_u_min = tile_idx as f32 + if is_right { 0.5 + margin } else { margin };
+            let target_u_max = tile_idx as f32 + if is_right { 1.0 - margin } else { 0.5 - margin };
+            let target_v_min = margin;
+            let target_v_max = 1.0 - margin;
+            
+            let u_w = u_max[axis] - u_min[axis];
+            let v_h = v_max[axis] - v_min[axis];
+            
+            for idx_offset in 0..3 {
+                let orig_vertex_idx = indices[t * 3 + idx_offset];
+                let orig_vertex = &vertices[orig_vertex_idx as usize];
+                
+                let raw_uv = projected_uvs[t * 3 + idx_offset];
+                let u = raw_uv[0];
+                let v = raw_uv[1];
+                
+                let mut local_u = if u_w > 1e-5 { (u - u_min[axis]) / u_w } else { 0.5 };
+                let mut local_v = if v_h > 1e-5 { (v - v_min[axis]) / v_h } else { 0.5 };
+                
+                if let IslandOrientation::AlignWith3DMesh = settings.island_orientation {
+                    let aspect_raw = if v_h > 1e-5 { u_w / v_h } else { 1.0 };
+                    let aspect_target = (target_u_max - target_u_min) / (target_v_max - target_v_min);
+                    if aspect_raw > aspect_target {
+                        let scale = aspect_target / aspect_raw;
+                        local_v = 0.5 + (local_v - 0.5) * scale;
+                    } else {
+                        let scale = aspect_raw / aspect_target;
+                        local_u = 0.5 + (local_u - 0.5) * scale;
+                    }
+                }
+                
+                let mapped_u = target_u_min + local_u * (target_u_max - target_u_min);
+                let mapped_v = target_v_min + local_v * (target_v_max - target_v_min);
+                
+                new_vertices.push(Vertex {
+                    position: orig_vertex.position,
+                    normal: orig_vertex.normal,
+                    tex_coords: [mapped_u, mapped_v],
+                });
+                new_indices.push((new_vertices.len() - 1) as u32);
+            }
+        }
+        
+        (new_vertices, new_indices)
+    }
+}
+
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct NodeUniform {
     pub model_matrix: [[f32; 4]; 4],
     pub normal_matrix: [[f32; 4]; 4],
+}
+
+#[derive(Clone, Debug)]
+pub struct MaterialInfo {
+    pub name: Option<String>,
+    pub base_color_factor: [f32; 4], // RGBA
+    pub metallic_factor: f32,
+    pub roughness_factor: f32,
+    pub emissive_factor: [f32; 3],
+    pub alpha_mode: String,          // "Opaque", "Mask", "Blend"
+    pub alpha_cutoff: f32,
+    pub double_sided: bool,
+    pub has_base_color_texture: bool,
+    pub has_normal_texture: bool,
+    pub has_metallic_roughness_texture: bool,
 }
 
 pub struct Primitive {
@@ -256,6 +428,9 @@ pub struct Primitive {
     pub vertex_buffer: wgpu::Buffer,
     pub index_buffer: wgpu::Buffer,
     pub num_indices: u32,
+    /// Index into `Document::materials`. `None` for procedural meshes or primitives
+    /// whose material slot is empty.
+    pub material_index: Option<usize>,
 }
 
 impl Primitive {
@@ -278,7 +453,25 @@ impl Primitive {
             vertex_buffer,
             index_buffer,
             num_indices,
+            material_index: None,
         }
+    }
+
+    pub fn update_buffers(&mut self, device: &wgpu::Device, vertices: Vec<Vertex>, indices: Vec<u32>) {
+        use wgpu::util::DeviceExt;
+        self.vertices = vertices;
+        self.indices = indices;
+        self.num_indices = self.indices.len() as u32;
+        self.vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Primitive Vertex Buffer"),
+            contents: bytemuck::cast_slice(&self.vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        self.index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Primitive Index Buffer"),
+            contents: bytemuck::cast_slice(&self.indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
     }
 }
 
@@ -321,9 +514,41 @@ pub struct Document {
     pub scenes: Vec<Scene>,
     pub nodes: Vec<Node>,
     pub active_scene_idx: usize,
+    /// Shared material library — indexed by `Primitive::material_index`.
+    /// Multiple primitives (even across different meshes/nodes) can share the
+    /// same entry, matching the glTF spec where materials are a top-level array.
+    pub materials: Vec<MaterialInfo>,
 }
 
 impl Document {
+    pub fn recompute_uvs(&mut self, settings: &ImportSettings, device: &wgpu::Device) {
+        for node in &mut self.nodes {
+            if let Some(ref mut mesh) = node.mesh {
+                for primitive in &mut mesh.primitives {
+                    if let SeamsOption::GenerateMissing = settings.seams_option {
+                        let mut has_uv = false;
+                        for v in &primitive.vertices {
+                            if v.tex_coords[0].abs() > 1e-4 || v.tex_coords[1].abs() > 1e-4 {
+                                has_uv = true;
+                                break;
+                            }
+                        }
+                        if has_uv {
+                            continue;
+                        }
+                    }
+                    
+                    let (new_vertices, new_indices) = BoxProjector::project(
+                        &primitive.vertices,
+                        &primitive.indices,
+                        settings,
+                    );
+                    primitive.update_buffers(device, new_vertices, new_indices);
+                }
+            }
+        }
+    }
+
     pub fn from_single_primitive(
         device: &wgpu::Device,
         layout: &wgpu::BindGroupLayout,
@@ -372,6 +597,7 @@ impl Document {
             scenes: vec![scene],
             nodes: vec![node],
             active_scene_idx: 0,
+            materials: vec![],
         }
     }
 
@@ -473,6 +699,28 @@ pub fn load_gltf(
         }
     };
 
+    let mut materials = Vec::new();
+    for mat in doc.materials() {
+        let pbr = mat.pbr_metallic_roughness();
+        materials.push(MaterialInfo {
+            name: mat.name().map(|s| s.to_string()),
+            base_color_factor: pbr.base_color_factor(),
+            metallic_factor: pbr.metallic_factor(),
+            roughness_factor: pbr.roughness_factor(),
+            emissive_factor: mat.emissive_factor(),
+            alpha_mode: match mat.alpha_mode() {
+                gltf::material::AlphaMode::Opaque => "Opaque".to_string(),
+                gltf::material::AlphaMode::Mask   => "Mask".to_string(),
+                gltf::material::AlphaMode::Blend  => "Blend".to_string(),
+            },
+            alpha_cutoff: mat.alpha_cutoff().unwrap_or(0.5),
+            double_sided: mat.double_sided(),
+            has_base_color_texture: pbr.base_color_texture().is_some(),
+            has_normal_texture: mat.normal_texture().is_some(),
+            has_metallic_roughness_texture: pbr.metallic_roughness_texture().is_some(),
+        });
+    }
+
     let mut nodes = Vec::new();
 
     for gltf_node in doc.nodes() {
@@ -533,7 +781,10 @@ pub fn load_gltf(
                 }
 
                 let prim_label = format!("{}_Mesh_{}_Prim_{}", name.as_deref().unwrap_or("Node"), gltf_mesh.index(), prim_idx);
-                primitives.push(Primitive::new(device, vertices, indices, &prim_label));
+
+                let mut prim = Primitive::new(device, vertices, indices, &prim_label);
+                prim.material_index = primitive.material().index();
+                primitives.push(prim);
             }
             Some(Mesh { primitives })
         } else {
@@ -583,6 +834,7 @@ pub fn load_gltf(
         scenes,
         nodes,
         active_scene_idx,
+        materials,
     })
 }
 

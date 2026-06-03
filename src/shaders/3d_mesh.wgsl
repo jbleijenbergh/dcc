@@ -47,7 +47,7 @@ fn vs_main(
 }
 
 @group(1) @binding(0)
-var t_diffuse: texture_2d<f32>;
+var t_diffuse: texture_2d_array<f32>;
 @group(1) @binding(1)
 var s_diffuse: sampler;
 
@@ -113,7 +113,27 @@ fn aces(x: vec3<f32>) -> vec3<f32> {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let object_color: vec4<f32> = textureSample(t_diffuse, s_diffuse, in.tex_coords);
+    // Resolve UDIM tile
+    let u = in.tex_coords.x;
+    let v = in.tex_coords.y;
+    let col = i32(floor(u));
+    let row = i32(floor(v));
+    
+    var object_color = vec4<f32>(1.0, 1.0, 1.0, 1.0);
+    if (col >= 0 && col < 4 && row == 0) {
+        let tile_index = col;
+        let local_uv = vec2<f32>(fract(u), fract(v));
+        object_color = textureSample(t_diffuse, s_diffuse, local_uv, tile_index);
+    } else {
+        // Out of bounds grid pattern
+        let grid_u = fract(u * 10.0);
+        let grid_v = fract(v * 10.0);
+        var pattern = vec3<f32>(0.15, 0.15, 0.18);
+        if (grid_u < 0.05 || grid_v < 0.05) {
+            pattern = vec3<f32>(0.25, 0.25, 0.3);
+        }
+        object_color = vec4<f32>(pattern, 1.0);
+    }
 
     // Direct lighting computation (PBR-lite / Phong shading)
     let ambient_color = camera.light_color.rgb * camera.ambient_strength;
@@ -136,6 +156,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var grid_mask: f32 = 1.0;
     if (u_grid < grid_thickness || u_grid > (1.0 - grid_thickness) || v_grid < grid_thickness || v_grid > (1.0 - grid_thickness)) {
         grid_mask = 0.85; // slightly darken grid lines
+    }
+    
+    // Draw thick tile border line at integer boundaries of U
+    let u_dist_to_int = abs(u - round(u));
+    if (u_dist_to_int < 0.015 && u > 0.01 && u < 3.99) {
+        grid_mask = 0.5; // darken tile boundaries heavily
     }
 
     let intensity = camera.light_color.a;
@@ -160,3 +186,4 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     return vec4<f32>(shaded_color, object_color.a);
 }
+

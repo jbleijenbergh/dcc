@@ -7,7 +7,7 @@ struct LayerInfo {
 
 struct LayersUniform {
     count: u32,
-    padding1: u32,
+    udim_tile: u32,
     padding2: u32,
     padding3: u32,
     layers: array<LayerInfo, 16>,
@@ -47,7 +47,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             continue;
         }
         
-        let tex_color = textureSample(layer_tex, samp, in.uv, i);
+        let tex_color = textureSample(layer_tex, samp, in.uv, i * 4u + uniforms.udim_tile);
         let l_a = tex_color.a * layer.opacity;
         if (l_a <= 0.0001) {
             continue;

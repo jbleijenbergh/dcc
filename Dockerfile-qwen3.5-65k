@@ -1,0 +1,2 @@
+FROM isotnek/qwen3.5:9B-Unsloth-UD-Q4_K_XL
+PARAMETER num_ctx 65536

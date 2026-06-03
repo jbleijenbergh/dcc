@@ -67,6 +67,8 @@ pub struct State {
 
     // Paint scheduling
     needs_paint: bool,
+    pub import_settings: crate::mesh::ImportSettings,
+    current_stroke: Option<crate::painter::PaintStroke>,
 }
 
 impl State {
@@ -200,6 +202,12 @@ impl State {
             gltf_rx: None,
             is_loading_gltf: false,
             needs_paint: false,
+            import_settings: crate::mesh::ImportSettings {
+                seams_option: crate::mesh::SeamsOption::GenerateMissing,
+                margin_size: crate::mesh::MarginSize::Medium,
+                island_orientation: crate::mesh::IslandOrientation::AlignWith3DMesh,
+            },
+            current_stroke: None,
         }
     }
 
@@ -225,6 +233,16 @@ impl State {
     pub fn input(&mut self, event: &WindowEvent) -> bool {
         // Always reset paint stroke tracking on left mouse button release, even if egui consumes it
         if let WindowEvent::MouseInput { state: winit::event::ElementState::Released, button: winit::event::MouseButton::Left, .. } = event {
+            // Commit the current stroke to the active layer's history before clearing it
+            if let Some(stroke) = self.current_stroke.take() {
+                let active = self.painter.active_layer_idx;
+                if active < self.painter.layers.len() && !self.painter.layers[active].is_fill {
+                    self.painter.layers[active].strokes.push(stroke);
+                    log::info!("Committed stroke to layer {}, total strokes: {}",
+                        self.painter.layers[active].name,
+                        self.painter.layers[active].strokes.len());
+                }
+            }
             self.last_hit_uv = None;
             self.is_left_clicked = false;
         }
@@ -398,6 +416,25 @@ impl State {
 
         if let Some(hit) = hit_opt {
             let paint_start = std::time::Instant::now();
+
+            // --- Stroke history recording ---
+            // On the very first hit of a stroke, initialise current_stroke
+            if self.current_stroke.is_none() && !is_eraser {
+                self.current_stroke = Some(crate::painter::PaintStroke {
+                    points: Vec::new(),
+                    uv_points: Vec::new(),
+                    color: brush_rgba,
+                    radius: self.brush_size,
+                    hardness: self.brush_hardness,
+                    is_eraser: false,
+                });
+            }
+            // Append the 3D world hit point and UV to the in-progress stroke
+            if let Some(ref mut stroke) = self.current_stroke {
+                stroke.points.push(hit.point);
+                stroke.uv_points.push(hit.uv);
+            }
+
             if let Some(last_uv) = self.last_hit_uv {
                 self.painter.paint_stroke(
                     &self.device,
@@ -451,6 +488,8 @@ impl State {
             _ => crate::mesh::create_sphere_document(&self.device, &self.viewport.node_bind_group_layout, 1.5, 32, 32),
         };
         self.viewport.set_document(doc);
+        self.painter.reproject_strokes(&self.viewport.document);
+        self.painter.redraw_all_layers(&self.device, &self.queue, &self.viewport.document);
         log::info!("Switched geometry to {}", mode);
     }
 
@@ -489,6 +528,14 @@ impl State {
         }
     }
 
+    fn recompute_and_reproject(&mut self) {
+        log::info!("Recomputing UV layout and reprojecting strokes...");
+        self.viewport.document.recompute_uvs(&self.import_settings, &self.device);
+        self.painter.reproject_strokes(&self.viewport.document);
+        self.painter.redraw_all_layers(&self.device, &self.queue, &self.viewport.document);
+        log::info!("UV layout recomputation and stroke reprojection complete!");
+    }
+
     pub fn update(&mut self) {
         if self.needs_paint {
             self.paint_at_cursor();
@@ -504,7 +551,10 @@ impl State {
                         self.viewport.set_document(doc);
                         self.current_mesh_type = filename;
                         self.focus_camera_on_model();
-                        log::info!("Successfully loaded glTF model asynchronously");
+                        // Reproject all recorded strokes onto the newly loaded geometry
+                        self.painter.reproject_strokes(&self.viewport.document);
+                        self.painter.redraw_all_layers(&self.device, &self.queue, &self.viewport.document);
+                        log::info!("Successfully loaded glTF model — strokes reprojected");
                     }
                     Err(e) => {
                         log::error!("Failed to load glTF model: {}", e);
@@ -524,6 +574,7 @@ impl State {
         let mut clear_requested = false;
         let mut geometry_to_switch = None;
         let mut gltf_to_load = None;
+        let mut recompute_uv_requested = false;
 
         // Top Menu Bar
         egui::Panel::top("top_menu").show(&self.egui_ctx, |ui| {
@@ -676,13 +727,18 @@ impl State {
                     ui.horizontal(|ui| {
                         ui.text_edit_singleline(&mut self.new_layer_name);
                         if ui.button("Add").clicked() && !self.new_layer_name.trim().is_empty() {
-                            self.painter.add_layer(self.new_layer_name.trim().to_string(), &self.device, &self.queue);
+                            self.painter.add_paint_layer(self.new_layer_name.trim().to_string(), &self.device, &self.queue);
                             self.new_layer_name.clear();
                         }
                     });
 
                     if ui.button("Add UV Grid Layer").clicked() {
                         self.painter.load_uv_grid_layer(&self.device, &self.queue);
+                    }
+
+                    if ui.button("✨ Add Fill Layer").clicked() {
+                        let name = format!("Fill {}", self.painter.layers.len() + 1);
+                        self.painter.add_fill_layer(name, &self.device, &self.queue, &self.viewport.document);
                     }
 
                     ui.separator();
@@ -711,6 +767,8 @@ impl State {
                         });
 
                         if is_active {
+                            let is_fill = self.painter.layers[idx].is_fill;
+                            let mut fill_changed = false;
                             ui.indent("layer_props", |ui| {
                                 ui.horizontal(|ui| {
                                     ui.label("Blend:");
@@ -741,13 +799,176 @@ impl State {
                                         self.painter.compose_layers(&self.device, &self.queue);
                                     }
                                 });
+
+                                if is_fill {
+                                    ui.separator();
+                                    ui.label(egui::RichText::new("Fill Layer Settings").strong());
+
+                                    ui.horizontal(|ui| {
+                                        ui.label("Base Color:");
+                                        let mut c = [
+                                            self.painter.layers[idx].fill_color[0] as f32 / 255.0,
+                                            self.painter.layers[idx].fill_color[1] as f32 / 255.0,
+                                            self.painter.layers[idx].fill_color[2] as f32 / 255.0,
+                                            self.painter.layers[idx].fill_color[3] as f32 / 255.0,
+                                        ];
+                                        if ui.color_edit_button_rgba_unmultiplied(&mut c).changed() {
+                                            self.painter.layers[idx].fill_color = [
+                                                (c[0] * 255.0) as u8, (c[1] * 255.0) as u8,
+                                                (c[2] * 255.0) as u8, (c[3] * 255.0) as u8,
+                                            ];
+                                            fill_changed = true;
+                                        }
+                                    });
+
+                                    ui.horizontal(|ui| {
+                                        ui.label("Noise Color:");
+                                        let mut c = [
+                                            self.painter.layers[idx].fill_noise_color[0] as f32 / 255.0,
+                                            self.painter.layers[idx].fill_noise_color[1] as f32 / 255.0,
+                                            self.painter.layers[idx].fill_noise_color[2] as f32 / 255.0,
+                                            self.painter.layers[idx].fill_noise_color[3] as f32 / 255.0,
+                                        ];
+                                        if ui.color_edit_button_rgba_unmultiplied(&mut c).changed() {
+                                            self.painter.layers[idx].fill_noise_color = [
+                                                (c[0] * 255.0) as u8, (c[1] * 255.0) as u8,
+                                                (c[2] * 255.0) as u8, (c[3] * 255.0) as u8,
+                                            ];
+                                            fill_changed = true;
+                                        }
+                                    });
+
+                                    ui.horizontal(|ui| {
+                                        ui.label("Noise Scale:");
+                                        let mut scale = self.painter.layers[idx].fill_noise_scale;
+                                        if ui.add(egui::Slider::new(&mut scale, 0.5..=50.0)).changed() {
+                                            self.painter.layers[idx].fill_noise_scale = scale;
+                                            fill_changed = true;
+                                        }
+                                    });
+
+                                    ui.horizontal(|ui| {
+                                        ui.label("Projection:");
+                                        let mut mode = self.painter.layers[idx].fill_projection_mode;
+                                        let prev_mode = mode;
+                                        egui::ComboBox::from_id_salt(format!("proj_{}", idx))
+                                            .selected_text(if mode == 1 { "Triplanar" } else { "UV" })
+                                            .show_ui(ui, |ui| {
+                                                ui.selectable_value(&mut mode, 0u32, "UV");
+                                                ui.selectable_value(&mut mode, 1u32, "Triplanar");
+                                            });
+                                        if mode != prev_mode {
+                                            self.painter.layers[idx].fill_projection_mode = mode;
+                                            fill_changed = true;
+                                        }
+                                    });
+                                }
                             });
+
+                            // Re-render fill layer if properties changed this frame
+                            if is_fill && fill_changed {
+                                let layer = &self.painter.layers[idx];
+                                let base = [
+                                    layer.fill_color[0] as f32 / 255.0, layer.fill_color[1] as f32 / 255.0,
+                                    layer.fill_color[2] as f32 / 255.0, layer.fill_color[3] as f32 / 255.0,
+                                ];
+                                let noise = [
+                                    layer.fill_noise_color[0] as f32 / 255.0, layer.fill_noise_color[1] as f32 / 255.0,
+                                    layer.fill_noise_color[2] as f32 / 255.0, layer.fill_noise_color[3] as f32 / 255.0,
+                                ];
+                                let scale = layer.fill_noise_scale;
+                                let proj = layer.fill_projection_mode;
+                                self.painter.render_fill_layer(
+                                    &self.device, &self.queue, idx, base, noise, scale, proj,
+                                    &self.viewport.document,
+                                );
+                                self.painter.compose_layers(&self.device, &self.queue);
+                            }
                         }
                         ui.separator();
                     }
 
                     if let Some(to_del) = layer_to_delete {
                         self.painter.delete_layer(to_del, &self.device, &self.queue);
+                    }
+                });
+
+            ui.separator();
+            egui::CollapsingHeader::new("UV Settings")
+                .default_open(false)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Seams:");
+                        egui::ComboBox::from_id_salt("seams_select")
+                            .selected_text(match self.import_settings.seams_option {
+                                crate::mesh::SeamsOption::GenerateMissing => "Generate Missing",
+                                crate::mesh::SeamsOption::RecomputeAll => "Recompute All",
+                            })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut self.import_settings.seams_option,
+                                    crate::mesh::SeamsOption::GenerateMissing,
+                                    "Generate Missing",
+                                );
+                                ui.selectable_value(
+                                    &mut self.import_settings.seams_option,
+                                    crate::mesh::SeamsOption::RecomputeAll,
+                                    "Recompute All",
+                                );
+                            });
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("Margin:");
+                        egui::ComboBox::from_id_salt("margin_select")
+                            .selected_text(match self.import_settings.margin_size {
+                                crate::mesh::MarginSize::Small => "Small",
+                                crate::mesh::MarginSize::Medium => "Medium",
+                                crate::mesh::MarginSize::Large => "Large",
+                            })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut self.import_settings.margin_size,
+                                    crate::mesh::MarginSize::Small,
+                                    "Small",
+                                );
+                                ui.selectable_value(
+                                    &mut self.import_settings.margin_size,
+                                    crate::mesh::MarginSize::Medium,
+                                    "Medium",
+                                );
+                                ui.selectable_value(
+                                    &mut self.import_settings.margin_size,
+                                    crate::mesh::MarginSize::Large,
+                                    "Large",
+                                );
+                            });
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("Orientation:");
+                        egui::ComboBox::from_id_salt("orientation_select")
+                            .selected_text(match self.import_settings.island_orientation {
+                                crate::mesh::IslandOrientation::AlignWith3DMesh => "Align with 3D Mesh",
+                                crate::mesh::IslandOrientation::Unconstrained => "Unconstrained",
+                            })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut self.import_settings.island_orientation,
+                                    crate::mesh::IslandOrientation::AlignWith3DMesh,
+                                    "Align with 3D Mesh",
+                                );
+                                ui.selectable_value(
+                                    &mut self.import_settings.island_orientation,
+                                    crate::mesh::IslandOrientation::Unconstrained,
+                                    "Unconstrained",
+                                );
+                            });
+                    });
+
+                    ui.add_space(4.0);
+                    if ui.button("🔄 Recompute UVs & Reproject Strokes").clicked() {
+                        recompute_uv_requested = true;
                     }
                 });
 
@@ -762,7 +983,7 @@ impl State {
                         let active_scene = &doc.scenes[doc.active_scene_idx];
                         egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
                             for &root_idx in &active_scene.root_nodes {
-                                draw_node_tree(ui, &doc.nodes, root_idx);
+                                draw_node_tree(ui, &doc.nodes, root_idx, &doc.materials);
                             }
                         });
                     }
@@ -821,6 +1042,10 @@ impl State {
 
         if let Some(path) = gltf_to_load {
             self.load_gltf_file(&path);
+        }
+
+        if recompute_uv_requested {
+            self.recompute_and_reproject();
         }
 
         if self.is_loading_gltf {
@@ -937,7 +1162,7 @@ impl State {
     }
 }
 
-fn draw_node_tree(ui: &mut egui::Ui, nodes: &[crate::mesh::Node], node_idx: usize) {
+fn draw_node_tree(ui: &mut egui::Ui, nodes: &[crate::mesh::Node], node_idx: usize, materials: &[crate::mesh::MaterialInfo]) {
     if node_idx >= nodes.len() {
         return;
     }
@@ -956,32 +1181,164 @@ fn draw_node_tree(ui: &mut egui::Ui, nodes: &[crate::mesh::Node], node_idx: usiz
             .default_open(true)
             .show(ui, |ui| {
                 if let Some(ref mesh) = node.mesh {
-                    draw_mesh_info(ui, mesh);
+                    draw_mesh_info(ui, mesh, materials);
                 }
                 for &child_idx in &node.children {
-                    draw_node_tree(ui, nodes, child_idx);
+                    draw_node_tree(ui, nodes, child_idx, materials);
                 }
             });
     }
 }
 
-fn draw_mesh_info(ui: &mut egui::Ui, mesh: &crate::mesh::Mesh) {
+fn draw_mesh_info(ui: &mut egui::Ui, mesh: &crate::mesh::Mesh, materials: &[crate::mesh::MaterialInfo]) {
     egui::CollapsingHeader::new("📦 Mesh")
         .default_open(true)
         .show(ui, |ui| {
             for (idx, prim) in mesh.primitives.iter().enumerate() {
-                ui.horizontal(|ui| {
-                    ui.label(format!("📐 Primitive {}", idx));
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "({} verts, {} indices)",
-                            prim.vertices.len(),
-                            prim.num_indices
-                        ))
-                        .weak()
-                        .size(10.0),
-                    );
-                });
+                egui::CollapsingHeader::new(format!("📐 Primitive {}", idx))
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        // Geometry stats
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{} verts  •  {} tris",
+                                    prim.vertices.len(),
+                                    prim.num_indices / 3,
+                                ))
+                                .weak()
+                                .size(10.0),
+                            );
+                        });
+
+                        // Material
+                        ui.add_space(2.0);
+                        if let Some(mat) = prim.material_index.and_then(|idx| materials.get(idx)) {
+                            egui::CollapsingHeader::new(
+                                egui::RichText::new(format!(
+                                    "🎨  {}",
+                                    mat.name.as_deref().unwrap_or("Material")
+                                ))
+                                .strong(),
+                            )
+                            .default_open(true)
+                            .show(ui, |ui| {
+                                egui::Grid::new(format!("mat_grid_{}_{}", idx, mat.name.as_deref().unwrap_or("")))
+                                    .num_columns(2)
+                                    .spacing([8.0, 3.0])
+                                    .striped(true)
+                                    .show(ui, |ui| {
+                                        // Base color swatch
+                                        let bc = mat.base_color_factor;
+                                        ui.label(egui::RichText::new("Base Color").size(11.0));
+                                        ui.horizontal(|ui| {
+                                            let swatch_color = egui::Color32::from_rgba_unmultiplied(
+                                                (bc[0] * 255.0) as u8,
+                                                (bc[1] * 255.0) as u8,
+                                                (bc[2] * 255.0) as u8,
+                                                (bc[3] * 255.0) as u8,
+                                            );
+                                            egui::color_picker::show_color(ui, swatch_color, egui::Vec2::new(18.0, 14.0));
+                                            ui.label(
+                                                egui::RichText::new(format!(
+                                                    "({:.2}, {:.2}, {:.2}, {:.2})",
+                                                    bc[0], bc[1], bc[2], bc[3]
+                                                ))
+                                                .size(10.0)
+                                                .weak(),
+                                            );
+                                        });
+                                        ui.end_row();
+
+                                        // Metallic
+                                        ui.label(egui::RichText::new("Metallic").size(11.0));
+                                        ui.add(egui::ProgressBar::new(mat.metallic_factor)
+                                            .desired_width(80.0)
+                                            .text(format!("{:.2}", mat.metallic_factor)));
+                                        ui.end_row();
+
+                                        // Roughness
+                                        ui.label(egui::RichText::new("Roughness").size(11.0));
+                                        ui.add(egui::ProgressBar::new(mat.roughness_factor)
+                                            .desired_width(80.0)
+                                            .text(format!("{:.2}", mat.roughness_factor)));
+                                        ui.end_row();
+
+                                        // Emissive
+                                        let em = mat.emissive_factor;
+                                        let em_mag = (em[0] * em[0] + em[1] * em[1] + em[2] * em[2]).sqrt();
+                                        if em_mag > 0.001 {
+                                            ui.label(egui::RichText::new("Emissive").size(11.0));
+                                            ui.horizontal(|ui| {
+                                                let em_color = egui::Color32::from_rgb(
+                                                    (em[0].min(1.0) * 255.0) as u8,
+                                                    (em[1].min(1.0) * 255.0) as u8,
+                                                    (em[2].min(1.0) * 255.0) as u8,
+                                                );
+                                                egui::color_picker::show_color(ui, em_color, egui::Vec2::new(18.0, 14.0));
+                                                ui.label(
+                                                    egui::RichText::new(format!(
+                                                        "({:.2}, {:.2}, {:.2})",
+                                                        em[0], em[1], em[2]
+                                                    ))
+                                                    .size(10.0)
+                                                    .weak(),
+                                                );
+                                            });
+                                            ui.end_row();
+                                        }
+
+                                        // Alpha
+                                        ui.label(egui::RichText::new("Alpha Mode").size(11.0));
+                                        let alpha_color = match mat.alpha_mode.as_str() {
+                                            "Blend" => egui::Color32::from_rgb(100, 160, 255),
+                                            "Mask"  => egui::Color32::from_rgb(255, 190, 80),
+                                            _       => egui::Color32::from_rgb(120, 200, 120),
+                                        };
+                                        ui.label(egui::RichText::new(&mat.alpha_mode).size(10.0).color(alpha_color));
+                                        ui.end_row();
+
+                                        if mat.alpha_mode == "Mask" {
+                                            ui.label(egui::RichText::new("Alpha Cutoff").size(11.0));
+                                            ui.label(egui::RichText::new(format!("{:.2}", mat.alpha_cutoff)).size(10.0).weak());
+                                            ui.end_row();
+                                        }
+
+                                        // Double-sided
+                                        ui.label(egui::RichText::new("Double-Sided").size(11.0));
+                                        ui.label(
+                                            egui::RichText::new(if mat.double_sided { "Yes" } else { "No" })
+                                                .size(10.0)
+                                                .weak(),
+                                        );
+                                        ui.end_row();
+                                    });
+
+                                // Texture slots
+                                ui.add_space(3.0);
+                                ui.label(egui::RichText::new("Texture Slots").size(10.0).weak());
+                                ui.horizontal_wrapped(|ui| {
+                                    let present = egui::Color32::from_rgb(80, 190, 110);
+                                    let absent  = egui::Color32::from_rgb(90, 90, 100);
+                                    for (label, has) in [
+                                        ("BaseColor", mat.has_base_color_texture),
+                                        ("Normal",    mat.has_normal_texture),
+                                        ("MetalRough", mat.has_metallic_roughness_texture),
+                                    ] {
+                                        let color = if has { present } else { absent };
+                                        ui.label(
+                                            egui::RichText::new(label)
+                                                .size(9.5)
+                                                .color(color)
+                                                .background_color(egui::Color32::from_black_alpha(60)),
+                                        );
+                                    }
+                                });
+                            });
+                        } else {
+                            ui.label(egui::RichText::new("No material").size(10.0).weak().italics());
+                        }
+                    });
             }
         });
 }
