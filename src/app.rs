@@ -17,6 +17,12 @@ pub enum Tool {
     Eraser,
 }
 
+#[derive(Clone, Debug)]
+pub struct LoadError {
+    pub path: std::path::PathBuf,
+    pub message: String,
+}
+
 pub struct State {
     surface: wgpu::Surface<'static>,
     device: Arc<wgpu::Device>,
@@ -69,6 +75,9 @@ pub struct State {
     needs_paint: bool,
     pub import_settings: crate::mesh::ImportSettings,
     current_stroke: Option<crate::painter::PaintStroke>,
+    error_details: Option<LoadError>,
+    error_time: Option<std::time::Instant>,
+    loading_path: Option<std::path::PathBuf>,
 }
 
 impl State {
@@ -208,6 +217,9 @@ impl State {
                 island_orientation: crate::mesh::IslandOrientation::AlignWith3DMesh,
             },
             current_stroke: None,
+            error_details: None,
+            error_time: None,
+            loading_path: None,
         }
     }
 
@@ -502,6 +514,7 @@ impl State {
         let (tx, rx) = std::sync::mpsc::channel();
         self.gltf_rx = Some(rx);
         self.is_loading_gltf = true;
+        self.loading_path = Some(path.to_path_buf());
 
         let path = path.to_path_buf();
         let device = self.device.clone();
@@ -546,11 +559,15 @@ impl State {
             if let Ok(res) = rx.try_recv() {
                 self.is_loading_gltf = false;
                 self.gltf_rx = None;
+                let path = self.loading_path.take().unwrap_or_default();
                 match res {
                     Ok((doc, filename)) => {
                         self.viewport.set_document(doc);
                         self.current_mesh_type = filename;
                         self.focus_camera_on_model();
+                        // Reset error details if any
+                        self.error_details = None;
+                        self.error_time = None;
                         // Reproject all recorded strokes onto the newly loaded geometry
                         self.painter.reproject_strokes(&self.viewport.document);
                         self.painter.redraw_all_layers(&self.device, &self.queue, &self.viewport.document);
@@ -558,6 +575,8 @@ impl State {
                     }
                     Err(e) => {
                         log::error!("Failed to load glTF model: {}", e);
+                        self.error_details = Some(LoadError { path, message: e.clone() });
+                        self.error_time = Some(std::time::Instant::now());
                     }
                 }
             }
@@ -569,6 +588,64 @@ impl State {
         // 1. Begin Egui frame
         let egui_input = self.egui_state.take_egui_input(&*self.window);
         self.egui_ctx.begin_pass(egui_input);
+
+        // Render error feedback modal if there was an issue loading the glTF model
+        let mut close_error = false;
+        if let Some(ref err) = self.error_details {
+            let can_dismiss = self.error_time.map_or(true, |t| t.elapsed().as_secs_f32() > 0.3);
+            egui::Window::new("Error Loading Model")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(&self.egui_ctx, |ui| {
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("⚠️").size(24.0));
+                            ui.vertical(|ui| {
+                                ui.label(egui::RichText::new("Failed to load glTF model").strong());
+                                ui.label(egui::RichText::new(err.path.file_name().unwrap_or_default().to_string_lossy()).weak());
+                            });
+                        });
+                        ui.add_space(8.0);
+                        
+                        ui.label(egui::RichText::new(&err.message).color(egui::Color32::from_rgb(255, 100, 100)));
+                        ui.add_space(8.0);
+
+                        // Context-aware suggestions
+                        let lower_msg = err.message.to_lowercase();
+                        if lower_msg.contains("cannot find the path") || lower_msg.contains("os error 3") || lower_msg.contains("not found") {
+                            ui.group(|ui| {
+                                ui.label(egui::RichText::new("💡 Quick Suggestion:").strong().size(11.0));
+                                ui.label(egui::RichText::new(
+                                    "This glTF file references external assets (such as a separate .bin buffer or image textures) \
+                                     that could not be found. Ensure all referenced files are in the same folder as the .gltf file."
+                                ).size(10.5));
+                            });
+                            ui.add_space(8.0);
+                        }
+
+                        egui::CollapsingHeader::new("Technical Details")
+                            .default_open(false)
+                            .show(ui, |ui| {
+                                ui.label(egui::RichText::new(format!("File Path: {}", err.path.display())).weak().size(10.0));
+                                ui.label(egui::RichText::new(format!("Raw Error: {}", err.message)).weak().size(10.0));
+                            });
+
+                        ui.add_space(12.0);
+                        ui.vertical_centered(|ui| {
+                            ui.add_enabled_ui(can_dismiss, |ui| {
+                                if ui.button("OK").clicked() {
+                                    close_error = true;
+                                }
+                            });
+                        });
+                    });
+                });
+        }
+        if close_error {
+            self.error_details = None;
+            self.error_time = None;
+        }
 
         let mut export_requested = false;
         let mut clear_requested = false;
@@ -990,6 +1067,35 @@ impl State {
                 });
 
             ui.separator();
+            egui::CollapsingHeader::new("Materials")
+                .default_open(true)
+                .show(ui, |ui| {
+                    let doc = &self.viewport.document;
+                    if doc.materials.is_empty() {
+                        ui.label(egui::RichText::new("No materials in model").weak().italics());
+                    } else {
+                        // Deduplicate materials by gltf_index (or name if gltf_index is None)
+                        let mut unique_materials: Vec<(usize, &crate::mesh::MaterialInfo)> = Vec::new();
+                        for (idx, mat) in doc.materials.iter().enumerate() {
+                            let is_duplicate = if let Some(gltf_id) = mat.gltf_index {
+                                unique_materials.iter().any(|(_, m)| m.gltf_index == Some(gltf_id))
+                            } else {
+                                unique_materials.iter().any(|(_, m)| m.name == mat.name && m.gltf_index.is_none())
+                            };
+                            if !is_duplicate {
+                                unique_materials.push((idx, mat));
+                            }
+                        }
+
+                        egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
+                            for (idx, mat) in unique_materials {
+                                draw_material_details(ui, idx, mat);
+                            }
+                        });
+                    }
+                });
+
+            ui.separator();
             egui::CollapsingHeader::new("Light Settings")
                 .default_open(true)
                 .show(ui, |ui| {
@@ -1166,28 +1272,30 @@ fn draw_node_tree(ui: &mut egui::Ui, nodes: &[crate::mesh::Node], node_idx: usiz
     if node_idx >= nodes.len() {
         return;
     }
-    let node = &nodes[node_idx];
-    let label = node.name.clone().unwrap_or_else(|| format!("Node {}", node_idx));
-    
-    let has_children = !node.children.is_empty();
-    let has_mesh = node.mesh.is_some();
-    
-    if !has_children && !has_mesh {
-        ui.horizontal(|ui| {
-            ui.label(format!("📄 {}", label));
-        });
-    } else {
-        egui::CollapsingHeader::new(format!("📁 {}", label))
-            .default_open(true)
-            .show(ui, |ui| {
-                if let Some(ref mesh) = node.mesh {
-                    draw_mesh_info(ui, mesh, materials);
-                }
-                for &child_idx in &node.children {
-                    draw_node_tree(ui, nodes, child_idx, materials);
-                }
+    ui.push_id(node_idx, |ui| {
+        let node = &nodes[node_idx];
+        let label = node.name.clone().unwrap_or_else(|| format!("Node {}", node_idx));
+        
+        let has_children = !node.children.is_empty();
+        let has_mesh = node.mesh.is_some();
+        
+        if !has_children && !has_mesh {
+            ui.horizontal(|ui| {
+                ui.label(format!("📄 {}", label));
             });
-    }
+        } else {
+            egui::CollapsingHeader::new(format!("📁 {}", label))
+                .default_open(true)
+                .show(ui, |ui| {
+                    if let Some(ref mesh) = node.mesh {
+                        draw_mesh_info(ui, mesh, materials);
+                    }
+                    for &child_idx in &node.children {
+                        draw_node_tree(ui, nodes, child_idx, materials);
+                    }
+                });
+        }
+    });
 }
 
 fn draw_mesh_info(ui: &mut egui::Ui, mesh: &crate::mesh::Mesh, materials: &[crate::mesh::MaterialInfo]) {
@@ -1195,150 +1303,335 @@ fn draw_mesh_info(ui: &mut egui::Ui, mesh: &crate::mesh::Mesh, materials: &[crat
         .default_open(true)
         .show(ui, |ui| {
             for (idx, prim) in mesh.primitives.iter().enumerate() {
-                egui::CollapsingHeader::new(format!("📐 Primitive {}", idx))
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        // Geometry stats
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "{} verts  •  {} tris",
-                                    prim.vertices.len(),
-                                    prim.num_indices / 3,
-                                ))
-                                .weak()
-                                .size(10.0),
-                            );
-                        });
-
-                        // Material
-                        ui.add_space(2.0);
-                        if let Some(mat) = prim.material_index.and_then(|idx| materials.get(idx)) {
-                            egui::CollapsingHeader::new(
-                                egui::RichText::new(format!(
-                                    "🎨  {}",
-                                    mat.name.as_deref().unwrap_or("Material")
-                                ))
-                                .strong(),
-                            )
-                            .default_open(true)
-                            .show(ui, |ui| {
-                                egui::Grid::new(format!("mat_grid_{}_{}", idx, mat.name.as_deref().unwrap_or("")))
-                                    .num_columns(2)
-                                    .spacing([8.0, 3.0])
-                                    .striped(true)
-                                    .show(ui, |ui| {
-                                        // Base color swatch
-                                        let bc = mat.base_color_factor;
-                                        ui.label(egui::RichText::new("Base Color").size(11.0));
-                                        ui.horizontal(|ui| {
-                                            let swatch_color = egui::Color32::from_rgba_unmultiplied(
-                                                (bc[0] * 255.0) as u8,
-                                                (bc[1] * 255.0) as u8,
-                                                (bc[2] * 255.0) as u8,
-                                                (bc[3] * 255.0) as u8,
-                                            );
-                                            egui::color_picker::show_color(ui, swatch_color, egui::Vec2::new(18.0, 14.0));
-                                            ui.label(
-                                                egui::RichText::new(format!(
-                                                    "({:.2}, {:.2}, {:.2}, {:.2})",
-                                                    bc[0], bc[1], bc[2], bc[3]
-                                                ))
-                                                .size(10.0)
-                                                .weak(),
-                                            );
-                                        });
-                                        ui.end_row();
-
-                                        // Metallic
-                                        ui.label(egui::RichText::new("Metallic").size(11.0));
-                                        ui.add(egui::ProgressBar::new(mat.metallic_factor)
-                                            .desired_width(80.0)
-                                            .text(format!("{:.2}", mat.metallic_factor)));
-                                        ui.end_row();
-
-                                        // Roughness
-                                        ui.label(egui::RichText::new("Roughness").size(11.0));
-                                        ui.add(egui::ProgressBar::new(mat.roughness_factor)
-                                            .desired_width(80.0)
-                                            .text(format!("{:.2}", mat.roughness_factor)));
-                                        ui.end_row();
-
-                                        // Emissive
-                                        let em = mat.emissive_factor;
-                                        let em_mag = (em[0] * em[0] + em[1] * em[1] + em[2] * em[2]).sqrt();
-                                        if em_mag > 0.001 {
-                                            ui.label(egui::RichText::new("Emissive").size(11.0));
-                                            ui.horizontal(|ui| {
-                                                let em_color = egui::Color32::from_rgb(
-                                                    (em[0].min(1.0) * 255.0) as u8,
-                                                    (em[1].min(1.0) * 255.0) as u8,
-                                                    (em[2].min(1.0) * 255.0) as u8,
-                                                );
-                                                egui::color_picker::show_color(ui, em_color, egui::Vec2::new(18.0, 14.0));
-                                                ui.label(
-                                                    egui::RichText::new(format!(
-                                                        "({:.2}, {:.2}, {:.2})",
-                                                        em[0], em[1], em[2]
-                                                    ))
-                                                    .size(10.0)
-                                                    .weak(),
-                                                );
-                                            });
-                                            ui.end_row();
-                                        }
-
-                                        // Alpha
-                                        ui.label(egui::RichText::new("Alpha Mode").size(11.0));
-                                        let alpha_color = match mat.alpha_mode.as_str() {
-                                            "Blend" => egui::Color32::from_rgb(100, 160, 255),
-                                            "Mask"  => egui::Color32::from_rgb(255, 190, 80),
-                                            _       => egui::Color32::from_rgb(120, 200, 120),
-                                        };
-                                        ui.label(egui::RichText::new(&mat.alpha_mode).size(10.0).color(alpha_color));
-                                        ui.end_row();
-
-                                        if mat.alpha_mode == "Mask" {
-                                            ui.label(egui::RichText::new("Alpha Cutoff").size(11.0));
-                                            ui.label(egui::RichText::new(format!("{:.2}", mat.alpha_cutoff)).size(10.0).weak());
-                                            ui.end_row();
-                                        }
-
-                                        // Double-sided
-                                        ui.label(egui::RichText::new("Double-Sided").size(11.0));
-                                        ui.label(
-                                            egui::RichText::new(if mat.double_sided { "Yes" } else { "No" })
-                                                .size(10.0)
-                                                .weak(),
-                                        );
-                                        ui.end_row();
-                                    });
-
-                                // Texture slots
-                                ui.add_space(3.0);
-                                ui.label(egui::RichText::new("Texture Slots").size(10.0).weak());
-                                ui.horizontal_wrapped(|ui| {
-                                    let present = egui::Color32::from_rgb(80, 190, 110);
-                                    let absent  = egui::Color32::from_rgb(90, 90, 100);
-                                    for (label, has) in [
-                                        ("BaseColor", mat.has_base_color_texture),
-                                        ("Normal",    mat.has_normal_texture),
-                                        ("MetalRough", mat.has_metallic_roughness_texture),
-                                    ] {
-                                        let color = if has { present } else { absent };
-                                        ui.label(
-                                            egui::RichText::new(label)
-                                                .size(9.5)
-                                                .color(color)
-                                                .background_color(egui::Color32::from_black_alpha(60)),
-                                        );
-                                    }
-                                });
+                ui.push_id(idx, |ui| {
+                    egui::CollapsingHeader::new(format!("📐 Primitive {}", idx))
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            // Geometry stats
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "{} verts  •  {} tris",
+                                        prim.vertices.len(),
+                                        prim.num_indices / 3,
+                                    ))
+                                    .weak()
+                                    .size(10.0),
+                                );
                             });
-                        } else {
-                            ui.label(egui::RichText::new("No material").size(10.0).weak().italics());
-                        }
-                    });
+
+                            // Material
+                            ui.add_space(2.0);
+                            if let Some(mat) = prim.material_index.and_then(|idx| materials.get(idx)) {
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new("🎨 Material:").size(11.0));
+                                    ui.label(
+                                        egui::RichText::new(mat.name.as_deref().unwrap_or("Material"))
+                                            .strong()
+                                            .size(11.0),
+                                    );
+                                });
+                            } else {
+                                ui.label(egui::RichText::new("No material").size(10.0).weak().italics());
+                            }
+                        });
+                });
             }
         });
+}
+
+fn draw_material_details(ui: &mut egui::Ui, idx: usize, mat: &crate::mesh::MaterialInfo) {
+    ui.push_id(idx, |ui| {
+        egui::CollapsingHeader::new(
+            egui::RichText::new(format!(
+                "🎨  {}",
+                mat.name.as_deref().unwrap_or("Material")
+            ))
+            .strong(),
+        )
+        .default_open(true)
+        .show(ui, |ui| {
+            egui::Grid::new("mat_detail_grid")
+                .num_columns(2)
+                .spacing([8.0, 3.0])
+                .striped(true)
+                .show(ui, |ui| {
+                    // Base color swatch
+                    let bc = mat.base_color_factor;
+                    ui.label(egui::RichText::new("Base Color").size(11.0));
+                    ui.horizontal(|ui| {
+                        let swatch_color = egui::Color32::from_rgba_unmultiplied(
+                            (bc[0] * 255.0) as u8,
+                            (bc[1] * 255.0) as u8,
+                            (bc[2] * 255.0) as u8,
+                            (bc[3] * 255.0) as u8,
+                        );
+                        egui::color_picker::show_color(ui, swatch_color, egui::Vec2::new(18.0, 14.0));
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "({:.2}, {:.2}, {:.2}, {:.2})",
+                                bc[0], bc[1], bc[2], bc[3]
+                            ))
+                            .size(10.0)
+                            .weak(),
+                        );
+                    });
+                    ui.end_row();
+
+                    // Metallic
+                    ui.label(egui::RichText::new("Metallic").size(11.0));
+                    ui.add(egui::ProgressBar::new(mat.metallic_factor)
+                        .desired_width(80.0)
+                        .text(format!("{:.2}", mat.metallic_factor)));
+                    ui.end_row();
+
+                    // Roughness
+                    ui.label(egui::RichText::new("Roughness").size(11.0));
+                    ui.add(egui::ProgressBar::new(mat.roughness_factor)
+                        .desired_width(80.0)
+                        .text(format!("{:.2}", mat.roughness_factor)));
+                    ui.end_row();
+
+                    // Normal Scale
+                    if mat.normal_scale != 1.0 {
+                        ui.label(egui::RichText::new("Normal Scale").size(11.0));
+                        ui.label(egui::RichText::new(format!("{:.2}", mat.normal_scale)).size(10.0).weak());
+                        ui.end_row();
+                    }
+
+                    // Occlusion Strength
+                    if mat.has_occlusion_texture {
+                        ui.label(egui::RichText::new("Occlusion Strength").size(11.0));
+                        ui.label(egui::RichText::new(format!("{:.2}", mat.occlusion_strength)).size(10.0).weak());
+                        ui.end_row();
+                    }
+
+                    // Emissive
+                    let em = mat.emissive_factor;
+                    let em_mag = (em[0] * em[0] + em[1] * em[1] + em[2] * em[2]).sqrt();
+                    if em_mag > 0.001 {
+                        ui.label(egui::RichText::new("Emissive").size(11.0));
+                        ui.horizontal(|ui| {
+                            let em_color = egui::Color32::from_rgb(
+                                (em[0].min(1.0) * 255.0) as u8,
+                                (em[1].min(1.0) * 255.0) as u8,
+                                (em[2].min(1.0) * 255.0) as u8,
+                            );
+                            egui::color_picker::show_color(ui, em_color, egui::Vec2::new(18.0, 14.0));
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "({:.2}, {:.2}, {:.2})",
+                                    em[0], em[1], em[2]
+                                ))
+                                .size(10.0)
+                                .weak(),
+                            );
+                        });
+                        ui.end_row();
+                    }
+
+                    // Emissive Strength
+                    if mat.emissive_strength != 1.0 {
+                        ui.label(egui::RichText::new("Emissive Strength").size(11.0));
+                        ui.label(egui::RichText::new(format!("{:.2}x", mat.emissive_strength)).size(10.0).weak());
+                        ui.end_row();
+                    }
+
+                    // Unlit
+                    if mat.unlit {
+                        ui.label(egui::RichText::new("Unlit").size(11.0));
+                        ui.label(egui::RichText::new("Yes").size(10.0).color(egui::Color32::from_rgb(255, 215, 0)));
+                        ui.end_row();
+                    }
+
+                    // IOR
+                    if (mat.ior - 1.5).abs() > 0.001 {
+                        ui.label(egui::RichText::new("Index of Refraction").size(11.0));
+                        ui.label(egui::RichText::new(format!("{:.3}", mat.ior)).size(10.0).weak());
+                        ui.end_row();
+                    }
+
+                    // Transmission
+                    if mat.transmission_factor > 0.001 {
+                        ui.label(egui::RichText::new("Transmission").size(11.0));
+                        ui.add(egui::ProgressBar::new(mat.transmission_factor)
+                            .desired_width(80.0)
+                            .text(format!("{:.2}", mat.transmission_factor)));
+                        ui.end_row();
+                    }
+
+                    // Volume
+                    if mat.thickness_factor > 0.001 {
+                        ui.label(egui::RichText::new("Volume Thickness").size(11.0));
+                        ui.label(egui::RichText::new(format!("{:.2}", mat.thickness_factor)).size(10.0).weak());
+                        ui.end_row();
+
+                        if mat.attenuation_distance.is_finite() {
+                            ui.label(egui::RichText::new("Attenuation Dist").size(11.0));
+                            ui.label(egui::RichText::new(format!("{:.2}", mat.attenuation_distance)).size(10.0).weak());
+                            ui.end_row();
+                        }
+
+                        ui.label(egui::RichText::new("Attenuation Color").size(11.0));
+                        ui.horizontal(|ui| {
+                            let ac = mat.attenuation_color;
+                            let ac_color = egui::Color32::from_rgb(
+                                (ac[0] * 255.0) as u8,
+                                (ac[1] * 255.0) as u8,
+                                (ac[2] * 255.0) as u8,
+                            );
+                            egui::color_picker::show_color(ui, ac_color, egui::Vec2::new(18.0, 14.0));
+                        });
+                        ui.end_row();
+                    }
+
+                    // Specular
+                    if (mat.specular_factor - 1.0).abs() > 0.001 || mat.specular_color_factor != [1.0, 1.0, 1.0] {
+                        ui.label(egui::RichText::new("Specular Factor").size(11.0));
+                        ui.label(egui::RichText::new(format!("{:.2}", mat.specular_factor)).size(10.0).weak());
+                        ui.end_row();
+
+                        ui.label(egui::RichText::new("Specular Color").size(11.0));
+                        ui.horizontal(|ui| {
+                            let sc = mat.specular_color_factor;
+                            let sc_color = egui::Color32::from_rgb(
+                                (sc[0] * 255.0) as u8,
+                                (sc[1] * 255.0) as u8,
+                                (sc[2] * 255.0) as u8,
+                            );
+                            egui::color_picker::show_color(ui, sc_color, egui::Vec2::new(18.0, 14.0));
+                        });
+                        ui.end_row();
+                    }
+
+                    // Clearcoat
+                    if mat.clearcoat_factor > 0.001 {
+                        ui.label(egui::RichText::new("Clearcoat Factor").size(11.0));
+                        ui.add(egui::ProgressBar::new(mat.clearcoat_factor)
+                            .desired_width(80.0)
+                            .text(format!("{:.2}", mat.clearcoat_factor)));
+                        ui.end_row();
+
+                        ui.label(egui::RichText::new("Clearcoat Rough").size(11.0));
+                        ui.add(egui::ProgressBar::new(mat.clearcoat_roughness_factor)
+                            .desired_width(80.0)
+                            .text(format!("{:.2}", mat.clearcoat_roughness_factor)));
+                        ui.end_row();
+                    }
+
+                    // Sheen
+                    if mat.sheen_color_factor != [0.0, 0.0, 0.0] {
+                        ui.label(egui::RichText::new("Sheen Color").size(11.0));
+                        ui.horizontal(|ui| {
+                            let shc = mat.sheen_color_factor;
+                            let shc_color = egui::Color32::from_rgb(
+                                (shc[0] * 255.0) as u8,
+                                (shc[1] * 255.0) as u8,
+                                (shc[2] * 255.0) as u8,
+                            );
+                            egui::color_picker::show_color(ui, shc_color, egui::Vec2::new(18.0, 14.0));
+                        });
+                        ui.end_row();
+
+                        ui.label(egui::RichText::new("Sheen Roughness").size(11.0));
+                        ui.add(egui::ProgressBar::new(mat.sheen_roughness_factor)
+                            .desired_width(80.0)
+                            .text(format!("{:.2}", mat.sheen_roughness_factor)));
+                        ui.end_row();
+                    }
+
+                    // Anisotropy
+                    if mat.anisotropy_strength.abs() > 0.001 {
+                        ui.label(egui::RichText::new("Anisotropy Strength").size(11.0));
+                        ui.label(egui::RichText::new(format!("{:.2}", mat.anisotropy_strength)).size(10.0).weak());
+                        ui.end_row();
+
+                        ui.label(egui::RichText::new("Anisotropy Rotation").size(11.0));
+                        ui.label(egui::RichText::new(format!("{:.1}°", mat.anisotropy_rotation.to_degrees())).size(10.0).weak());
+                        ui.end_row();
+                    }
+
+                    // Iridescence
+                    if mat.iridescence_factor > 0.001 {
+                        ui.label(egui::RichText::new("Iridescence Factor").size(11.0));
+                        ui.add(egui::ProgressBar::new(mat.iridescence_factor)
+                            .desired_width(80.0)
+                            .text(format!("{:.2}", mat.iridescence_factor)));
+                        ui.end_row();
+
+                        ui.label(egui::RichText::new("Iridescence IOR").size(11.0));
+                        ui.label(egui::RichText::new(format!("{:.2}", mat.iridescence_ior)).size(10.0).weak());
+                        ui.end_row();
+
+                        ui.label(egui::RichText::new("Iridescence Thick").size(11.0));
+                        ui.label(egui::RichText::new(format!("{:.0}-{:.0} nm", mat.iridescence_thickness_min, mat.iridescence_thickness_max)).size(10.0).weak());
+                        ui.end_row();
+                    }
+
+                    // Alpha
+                    ui.label(egui::RichText::new("Alpha Mode").size(11.0));
+                    let alpha_color = match mat.alpha_mode.as_str() {
+                        "Blend" => egui::Color32::from_rgb(100, 160, 255),
+                        "Mask"  => egui::Color32::from_rgb(255, 190, 80),
+                        _       => egui::Color32::from_rgb(120, 200, 120),
+                    };
+                    ui.label(egui::RichText::new(&mat.alpha_mode).size(10.0).color(alpha_color));
+                    ui.end_row();
+
+                    if mat.alpha_mode == "Mask" {
+                        ui.label(egui::RichText::new("Alpha Cutoff").size(11.0));
+                        ui.label(egui::RichText::new(format!("{:.2}", mat.alpha_cutoff)).size(10.0).weak());
+                        ui.end_row();
+                    }
+
+                    // Double-sided
+                    ui.label(egui::RichText::new("Double-Sided").size(11.0));
+                    ui.label(
+                        egui::RichText::new(if mat.double_sided { "Yes" } else { "No" })
+                            .size(10.0)
+                            .weak(),
+                    );
+                    ui.end_row();
+                });
+
+            // Texture slots
+            let active_slots: Vec<(&str, bool)> = [
+                ("BaseColor", mat.has_base_color_texture),
+                ("Normal", mat.has_normal_texture),
+                ("MetalRough", mat.has_metallic_roughness_texture),
+                ("Occlusion", mat.has_occlusion_texture),
+                ("Transmission", mat.has_transmission_texture),
+                ("Thickness", mat.has_thickness_texture),
+                ("Specular", mat.has_specular_texture),
+                ("SpecColor", mat.has_specular_color_texture),
+                ("Clearcoat", mat.has_clearcoat_texture),
+                ("ClearcoatRough", mat.has_clearcoat_roughness_texture),
+                ("ClearcoatNormal", mat.has_clearcoat_normal_texture),
+                ("SheenColor", mat.has_sheen_color_texture),
+                ("SheenRough", mat.has_sheen_roughness_texture),
+                ("Anisotropy", mat.has_anisotropy_texture),
+                ("Iridescence", mat.has_iridescence_texture),
+                ("IridescenceThick", mat.has_iridescence_thickness_texture),
+            ]
+            .into_iter()
+            .filter(|&(_, has)| has)
+            .collect();
+
+            if !active_slots.is_empty() {
+                ui.add_space(5.0);
+                ui.label(egui::RichText::new("Active Texture Slots").size(10.0).weak());
+                ui.horizontal_wrapped(|ui| {
+                    let present_color = egui::Color32::from_rgb(80, 190, 110);
+                    for (label, _) in active_slots {
+                        ui.label(
+                            egui::RichText::new(label)
+                                .size(9.5)
+                                .color(present_color)
+                                .background_color(egui::Color32::from_black_alpha(60)),
+                        );
+                    }
+                });
+            }
+        });
+    });
 }

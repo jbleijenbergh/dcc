@@ -661,6 +661,7 @@ dependencies = [
  "memmap2",
  "pollster",
  "rfd",
+ "serde_json",
  "wgpu",
  "winit",
 ]
