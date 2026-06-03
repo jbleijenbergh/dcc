@@ -1,8 +1,4 @@
-mod app;
-mod mesh;
-mod viewport;
-mod painter;
-mod raycast;
+use dcc_painter::app;
 
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
