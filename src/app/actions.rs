@@ -105,6 +105,7 @@ impl State {
             _ => crate::mesh::create_sphere_document(&self.device, &self.viewport.node_bind_group_layout, 1.5, 32, 32),
         };
         self.viewport.set_document(doc);
+        self.viewport.update_node_transforms(&self.queue);
         self.painter.reproject_strokes(&self.viewport.document);
         self.painter.redraw_all_layers(&self.device, &self.queue, &self.viewport.document);
         log::info!("Switched geometry to {}", mode);
@@ -149,6 +150,7 @@ impl State {
     pub fn recompute_and_reproject(&mut self) {
         log::info!("Recomputing UV layout and reprojecting strokes...");
         self.viewport.document.recompute_uvs(&self.import_settings, &self.device);
+        self.viewport.update_node_transforms(&self.queue);
         self.painter.reproject_strokes(&self.viewport.document);
         self.painter.redraw_all_layers(&self.device, &self.queue, &self.viewport.document);
         log::info!("UV layout recomputation and stroke reprojection complete!");

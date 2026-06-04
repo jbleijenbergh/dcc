@@ -17,7 +17,7 @@ pub(super) fn draw_node_tree(ui: &mut egui::Ui, nodes: &[Node], node_idx: usize,
             });
         } else {
             egui::CollapsingHeader::new(format!("📁 {}", label))
-                .default_open(true)
+                .default_open(false)
                 .show(ui, |ui| {
                     if let Some(ref mesh) = node.mesh {
                         draw_mesh_info(ui, mesh, materials);
@@ -32,7 +32,7 @@ pub(super) fn draw_node_tree(ui: &mut egui::Ui, nodes: &[Node], node_idx: usize,
 
 pub(super) fn draw_mesh_info(ui: &mut egui::Ui, mesh: &Mesh, materials: &[MaterialInfo]) {
     egui::CollapsingHeader::new("📦 Mesh")
-        .default_open(true)
+        .default_open(false)
         .show(ui, |ui| {
             for (idx, prim) in mesh.primitives.iter().enumerate() {
                 ui.push_id(idx, |ui| {
@@ -79,7 +79,7 @@ pub(super) fn draw_material_details(ui: &mut egui::Ui, idx: usize, mat: &Materia
             ))
             .strong(),
         )
-        .default_open(true)
+        .default_open(false)
         .show(ui, |ui| {
             egui::Grid::new("mat_detail_grid")
                 .num_columns(2)

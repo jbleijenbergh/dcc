@@ -133,6 +133,7 @@ impl State {
             aspect,
             &texture_bind_group_layout,
         );
+        viewport.update_node_transforms(&queue);
 
         let (depth_texture, depth_view) = crate::viewport::create_depth_texture(&device, &config, "depth_texture");
 
@@ -372,6 +373,7 @@ impl State {
                 match res {
                     Ok((doc, filename)) => {
                         self.viewport.set_document(doc);
+                        self.viewport.update_node_transforms(&self.queue);
                         self.current_mesh_type = filename;
                         self.focus_camera_on_model();
                         self.error_details = None;
@@ -1015,7 +1017,6 @@ impl State {
         );
 
         self.viewport.update_camera(&self.queue);
-        self.viewport.update_node_transforms(&self.queue);
 
         self.viewport.render(
             &mut encoder,

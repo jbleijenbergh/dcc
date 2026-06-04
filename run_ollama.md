@@ -52,3 +52,6 @@ in C:\Users\<xxx>>\.continue\config.yaml
 # quality of life
 
 rightclick the continum icon on the left and move it to secondairy bar
+
+# new gemma 4
+ollama run gemma4:26b-a4b-it-q4_K_M
