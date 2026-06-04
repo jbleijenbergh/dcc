@@ -57,8 +57,6 @@ pub struct State {
     gltf_rx: Option<std::sync::mpsc::Receiver<Result<(crate::mesh::Document, String), String>>>,
     is_loading_gltf: bool,
 
-    // Paint scheduling
-    needs_paint: bool,
     pub import_settings: crate::mesh::ImportSettings,
     current_stroke: Option<crate::painter::PaintStroke>,
     error_details: Option<LoadError>,
@@ -191,7 +189,6 @@ impl State {
             last_hit_uv: None,
             gltf_rx: None,
             is_loading_gltf: false,
-            needs_paint: false,
             import_settings: crate::mesh::ImportSettings {
                 seams_option: crate::mesh::SeamsOption::GenerateMissing,
                 margin_size: crate::mesh::MarginSize::Medium,
@@ -302,7 +299,7 @@ impl State {
                             self.last_hit_uv = None;
                         } else {
                             if !self.is_space_pressed && !self.is_alt_pressed {
-                                self.needs_paint = true;
+                                self.paint_at_cursor();
                             }
                         }
                         true
@@ -332,7 +329,7 @@ impl State {
                             .clamp(-std::f32::consts::FRAC_PI_2 + 0.05, std::f32::consts::FRAC_PI_2 - 0.05);
                         self.last_hit_uv = None;
                     } else {
-                        self.needs_paint = true;
+                        self.paint_at_cursor();
                     }
                     return true;
                 }
@@ -367,11 +364,6 @@ impl State {
     }
 
     pub fn update(&mut self) {
-        if self.needs_paint {
-            self.paint_at_cursor();
-            self.needs_paint = false;
-        }
-
         if let Some(ref rx) = self.gltf_rx {
             if let Ok(res) = rx.try_recv() {
                 self.is_loading_gltf = false;
@@ -400,6 +392,7 @@ impl State {
 
     #[allow(deprecated)]
     pub fn render(&mut self) -> Result<(), SurfaceError> {
+        let render_start = std::time::Instant::now();
         let egui_input = self.egui_state.take_egui_input(&*self.window);
         self.egui_ctx.begin_pass(egui_input);
 
@@ -1063,6 +1056,7 @@ impl State {
             self.egui_renderer.free_texture(id);
         }
 
+        log::debug!("State::render() took {:?}", render_start.elapsed());
         Ok(())
     }
 }

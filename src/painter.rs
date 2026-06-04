@@ -908,6 +908,7 @@ impl Painter {
         hardness: f32,
         is_eraser: bool,
     ) {
+        let total_start = std::time::Instant::now();
         let from_px = from * glam::Vec2::new(self.width as f32, self.height as f32);
         let to_px = to * glam::Vec2::new(self.width as f32, self.height as f32);
         
@@ -940,6 +941,7 @@ impl Painter {
             }
         };
 
+        let accum_start = std::time::Instant::now();
         let dist = from_px.distance(to_px);
         let step_size = (radius * 0.1).max(1.0);
         let num_steps = (dist / step_size).ceil() as u32;
@@ -954,7 +956,9 @@ impl Painter {
                 add_stamp_udim(x, y);
             }
         }
+        let accum_duration = accum_start.elapsed();
 
+        let render_start = std::time::Instant::now();
         for t in 0..MAX_UDIMS {
             let stamps = &tile_stamps[t];
             if stamps.is_empty() { continue; }
@@ -994,8 +998,20 @@ impl Painter {
             }
             queue.submit(std::iter::once(encoder.finish()));
         }
+        let render_duration = render_start.elapsed();
         
+        let compose_start = std::time::Instant::now();
         self.compose_layers(device, queue);
+        let compose_duration = compose_start.elapsed();
+
+        log::debug!(
+            "paint_stroke detailed timing: accum={:?}, render={:?}, compose={:?}, total={:?}, stamps={}",
+            accum_duration,
+            render_duration,
+            compose_duration,
+            total_start.elapsed(),
+            num_steps + 1
+        );
     }
 
     pub fn paint_stamp(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, uv: glam::Vec2, color: [u8; 4], radius: f32, hardness: f32, is_eraser: bool) {

@@ -86,12 +86,13 @@ impl State {
             let paint_duration = paint_start.elapsed();
             self.last_hit_uv = Some(hit.uv);
 
-            log::info!(
+            log::debug!(
                 "Paint stroke timing: raycast={:?}, paint={:?}, total={:?}",
                 raycast_duration,
                 paint_duration,
                 start_time.elapsed()
             );
+            self.window.request_redraw();
         } else {
             self.last_hit_uv = None;
         }
