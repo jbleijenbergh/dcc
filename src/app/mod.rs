@@ -62,6 +62,7 @@ pub struct State {
     error_details: Option<LoadError>,
     error_time: Option<std::time::Instant>,
     loading_path: Option<std::path::PathBuf>,
+    supported_present_modes: Vec<wgpu::PresentMode>,
 }
 
 impl State {
@@ -199,6 +200,7 @@ impl State {
             error_details: None,
             error_time: None,
             loading_path: None,
+            supported_present_modes: surface_caps.present_modes,
         }
     }
 
@@ -562,7 +564,8 @@ impl State {
             ui.heading("Settings");
             ui.separator();
 
-            egui::CollapsingHeader::new("Brush Settings")
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                egui::CollapsingHeader::new("Brush Settings")
                 .default_open(true)
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
@@ -932,6 +935,63 @@ impl State {
                         ui.add(egui::Slider::new(&mut self.viewport.exposure, 0.1..=5.0));
                     });
                 });
+
+            ui.separator();
+            egui::CollapsingHeader::new("Display Info")
+                .default_open(true)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Color Format:");
+                        ui.label(egui::RichText::new(format!("{:?}", self.config.format)).strong());
+                    });
+
+                    let refresh_rate = self.window.current_monitor()
+                        .and_then(|m| m.refresh_rate_millihertz())
+                        .map(|mhz| format!("{:.1} Hz", mhz as f32 / 1000.0))
+                        .unwrap_or_else(|| "Unknown".to_string());
+                    ui.horizontal(|ui| {
+                        ui.label("Refresh Rate:");
+                        ui.label(egui::RichText::new(refresh_rate).strong());
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("VSync / Present Mode:");
+                        let mut present_mode = self.config.present_mode;
+                        let prev_mode = present_mode;
+                        egui::ComboBox::from_id_salt("present_mode_select")
+                            .selected_text(match present_mode {
+                                wgpu::PresentMode::Fifo => "VSync On (Fifo)",
+                                wgpu::PresentMode::Immediate => "VSync Off (Immediate)",
+                                wgpu::PresentMode::Mailbox => "VSync Off (Mailbox)",
+                                wgpu::PresentMode::AutoVsync => "Auto VSync",
+                                wgpu::PresentMode::AutoNoVsync => "Auto VSync Off",
+                                _ => "Other",
+                            })
+                            .show_ui(ui, |ui| {
+                                if self.supported_present_modes.contains(&wgpu::PresentMode::Fifo) {
+                                    ui.selectable_value(&mut present_mode, wgpu::PresentMode::Fifo, "VSync On (Fifo)");
+                                }
+                                if self.supported_present_modes.contains(&wgpu::PresentMode::Immediate) {
+                                    ui.selectable_value(&mut present_mode, wgpu::PresentMode::Immediate, "VSync Off (Immediate)");
+                                }
+                                if self.supported_present_modes.contains(&wgpu::PresentMode::Mailbox) {
+                                    ui.selectable_value(&mut present_mode, wgpu::PresentMode::Mailbox, "VSync Off (Mailbox)");
+                                }
+                                if self.supported_present_modes.contains(&wgpu::PresentMode::AutoVsync) {
+                                    ui.selectable_value(&mut present_mode, wgpu::PresentMode::AutoVsync, "Auto VSync");
+                                }
+                                if self.supported_present_modes.contains(&wgpu::PresentMode::AutoNoVsync) {
+                                    ui.selectable_value(&mut present_mode, wgpu::PresentMode::AutoNoVsync, "Auto VSync Off");
+                                }
+                            });
+                        if present_mode != prev_mode {
+                            self.config.present_mode = present_mode;
+                            self.surface.configure(&self.device, &self.config);
+                            log::info!("Present mode switched to {:?}", present_mode);
+                        }
+                    });
+                });
+            });
         });
 
         if clear_requested {
