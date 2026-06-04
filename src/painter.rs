@@ -796,6 +796,70 @@ impl Painter {
         self.compose_layers(device, queue);
     }
 
+    pub fn load_uv_checker_layer(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        if self.layers.len() >= MAX_LAYERS {
+            log::warn!("Maximum layers reached");
+            return;
+        }
+
+        let layer_idx = self.layers.len();
+        self.layers.push(Layer::new("UV Checker".to_string()));
+
+        for t in 0..MAX_UDIMS {
+            let filename = format!("UV-CheckerMap_Maurus_0{}_8K.png", t + 1);
+            let img = match image::open(&filename) {
+                Ok(img) => img.into_rgba8(),
+                Err(e) => {
+                    log::error!("Failed to load {}: {}", filename, e);
+                    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+                    let view_idx = layer_idx * MAX_UDIMS + t;
+                    let _rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("Clear Missing Checker Tile"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &self.layer_views[view_idx],
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                                store: wgpu::StoreOp::Store,
+                            },
+                            depth_slice: None,
+                        })],
+                        depth_stencil_attachment: None,
+                        occlusion_query_set: None,
+                        timestamp_writes: None,
+                        multiview_mask: None,
+                    }).forget_lifetime();
+                    queue.submit(std::iter::once(encoder.finish()));
+                    continue;
+                }
+            };
+
+            let resized_img = if img.width() != self.width || img.height() != self.height {
+                image::imageops::resize(&img, self.width, self.height, image::imageops::FilterType::Triangle)
+            } else {
+                img
+            };
+
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.layer_array_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d { x: 0, y: 0, z: (layer_idx * MAX_UDIMS + t) as u32 },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &resized_img,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(4 * self.width),
+                    rows_per_image: Some(self.height),
+                },
+                wgpu::Extent3d { width: self.width, height: self.height, depth_or_array_layers: 1 },
+            );
+        }
+
+        self.compose_layers(device, queue);
+    }
+
     pub fn clear_all_layers(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         for i in 0..self.layers.len() {

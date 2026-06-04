@@ -739,9 +739,14 @@ impl State {
                         }
                     });
 
-                    if ui.button("Add UV Grid Layer").clicked() {
-                        self.painter.load_uv_grid_layer(&self.device, &self.queue);
-                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("Add UV Grid Layer").clicked() {
+                            self.painter.load_uv_grid_layer(&self.device, &self.queue);
+                        }
+                        if ui.button("Add UV Checker Layer").clicked() {
+                            self.painter.load_uv_checker_layer(&self.device, &self.queue);
+                        }
+                    });
 
                     if ui.button("✨ Add Fill Layer").clicked() {
                         let name = format!("Fill {}", self.painter.layers.len() + 1);
