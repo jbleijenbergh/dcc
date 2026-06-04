@@ -23,8 +23,14 @@ impl State {
         let ray = crate::raycast::Ray::from_screen(mouse_pos, screen_size, view, proj);
 
         let is_eraser = self.active_tool == Tool::Eraser;
+        
+        // Apply tablet pressure to brush parameters
+        let pressure = if self.has_tablet_input { self.calibrated_pressure() } else { 1.0 };
+        let effective_size = self.brush_size * (0.2 + 0.8 * pressure); // Min 20% size at zero pressure
+        let effective_opacity = self.brush_opacity * pressure;
+        
         let mut brush_rgba = self.brush_color;
-        brush_rgba[3] = (self.brush_opacity * 255.0) as u8;
+        brush_rgba[3] = (effective_opacity * 255.0) as u8;
 
         let raycast_start = std::time::Instant::now();
         let hit_opt = crate::raycast::intersect_document(
@@ -40,8 +46,10 @@ impl State {
                 self.current_stroke = Some(crate::painter::PaintStroke {
                     points: Vec::new(),
                     uv_points: Vec::new(),
+                    point_radii: Vec::new(),
+                    point_alphas: Vec::new(),
                     color: brush_rgba,
-                    radius: self.brush_size,
+                    radius: effective_size,
                     hardness: self.brush_hardness,
                     is_eraser: false,
                 });
@@ -49,6 +57,8 @@ impl State {
             if let Some(ref mut stroke) = self.current_stroke {
                 stroke.points.push(hit.point);
                 stroke.uv_points.push(hit.uv);
+                stroke.point_radii.push(effective_size);
+                stroke.point_alphas.push(brush_rgba[3]);
             }
 
             if let Some(last_uv) = self.last_hit_uv {
@@ -60,21 +70,23 @@ impl State {
                     self.last_hit_pos,
                     Some(hit.point),
                     brush_rgba,
-                    self.brush_size,
+                    effective_size,
                     self.brush_hardness,
                     is_eraser,
                     self.viewport.document.num_udim_tiles,
                 );
             } else {
                 log::info!(
-                    "Mouse click / Stroke start coordinates:\n  Screen: [x: {:.2}, y: {:.2}]\n  World:  [x: {:.4}, y: {:.4}, z: {:.4}]\n  UV:     [u: {:.4}, v: {:.4}]",
+                    "Stroke start coordinates:\n  Screen: [x: {:.2}, y: {:.2}]\n  World:  [x: {:.4}, y: {:.4}, z: {:.4}]\n  UV:     [u: {:.4}, v: {:.4}]\n  Pressure: {:.3}, Size: {:.1}",
                     mouse_pos.x,
                     mouse_pos.y,
                     hit.point.x,
                     hit.point.y,
                     hit.point.z,
                     hit.uv.x,
-                    hit.uv.y
+                    hit.uv.y,
+                    pressure,
+                    effective_size
                 );
                 self.painter.paint_stamp(
                     &self.device,
@@ -82,7 +94,7 @@ impl State {
                     hit.uv,
                     Some(hit.point),
                     brush_rgba,
-                    self.brush_size,
+                    effective_size,
                     self.brush_hardness,
                     is_eraser,
                     self.viewport.document.num_udim_tiles,

@@ -69,6 +69,14 @@ pub struct State {
     last_hit_uv: Option<glam::Vec2>,
     last_hit_pos: Option<glam::Vec3>,
 
+    // Tablet input state
+    pen_pressure: f32,       // 0.0 to 1.0 (from touch force)
+    has_tablet_input: bool,  // Track if we're receiving tablet events
+    touchpad_pressure_stage: i64,
+    show_pressure_calibration: bool,
+    pressure_curve_min_start: f32,
+    pressure_curve_max_at: f32,
+
     // Async loading state
     gltf_rx: Option<std::sync::mpsc::Receiver<Result<(crate::mesh::Document, String, Vec<Vec<crate::painter::PaintStroke>>), String>>>,
     gltf_loading_status: Option<Arc<std::sync::Mutex<String>>>,
@@ -220,6 +228,12 @@ impl State {
             is_alt_pressed: false,
             last_hit_uv: None,
             last_hit_pos: None,
+            pen_pressure: 1.0,
+            has_tablet_input: false,
+            touchpad_pressure_stage: 0,
+            show_pressure_calibration: false,
+            pressure_curve_min_start: 0.05,
+            pressure_curve_max_at: 0.85,
             gltf_rx: None,
             gltf_loading_status: None,
             is_loading_gltf: false,
@@ -253,6 +267,13 @@ impl State {
         }
     }
 
+    pub fn calibrated_pressure(&self) -> f32 {
+        let p = self.pen_pressure.clamp(0.0, 1.0);
+        let min_start = self.pressure_curve_min_start.clamp(0.0, 1.0);
+        let max_at = self.pressure_curve_max_at.clamp(min_start + 0.001, 1.0);
+        ((p - min_start) / (max_at - min_start)).clamp(0.0, 1.0)
+    }
+
     pub fn input(&mut self, event: &WindowEvent) -> bool {
         if let WindowEvent::MouseInput { state: winit::event::ElementState::Released, button: winit::event::MouseButton::Left, .. } = event {
             if let Some(stroke) = self.current_stroke.take() {
@@ -268,11 +289,95 @@ impl State {
             self.last_hit_uv = None;
             self.last_hit_pos = None;
             self.is_left_clicked = false;
+            self.pen_pressure = 1.0;
+            if self.touchpad_pressure_stage <= 0 {
+                self.has_tablet_input = false;
+            }
         }
 
         let egui_resp = self.egui_state.on_window_event(&*self.window, event);
         if egui_resp.consumed {
             return true;
+        }
+
+        // Handle tablet/touch input with pressure
+        if let WindowEvent::Touch(touch) = event {
+            use winit::event::TouchPhase;
+            
+            self.has_tablet_input = true;
+            
+            // Extract pressure from force data
+            self.pen_pressure = match touch.force {
+                Some(winit::event::Force::Normalized(pressure)) => pressure as f32,
+                Some(winit::event::Force::Calibrated { force, max_possible_force, .. }) => {
+                    (force / max_possible_force) as f32
+                }
+                None => 1.0,
+            };
+            
+            // Update cursor position from touch location
+            self.last_mouse_pos = touch.location;
+            
+            log::debug!("Touch input: pressure={:.3}, phase={:?}", self.pen_pressure, touch.phase);
+            
+            // Handle touch phases similar to mouse
+            match touch.phase {
+                TouchPhase::Started => {
+                    if !self.egui_ctx.egui_wants_pointer_input() {
+                        if !self.is_space_pressed && !self.is_alt_pressed {
+                            self.is_left_clicked = true;
+                            self.paint_at_cursor();
+                        }
+                    }
+                    return true;
+                }
+                TouchPhase::Ended | TouchPhase::Cancelled => {
+                    if let Some(stroke) = self.current_stroke.take() {
+                        let active = self.painter.active_layer_idx;
+                        if active < self.painter.layers.len() && !self.painter.layers[active].is_fill {
+                            self.push_undo_state();
+                            self.painter.layers[active].strokes.push(stroke);
+                            log::info!("Committed touch stroke to layer {}, total strokes: {}",
+                                self.painter.layers[active].name,
+                                self.painter.layers[active].strokes.len());
+                        }
+                    }
+                    self.last_hit_uv = None;
+                    self.last_hit_pos = None;
+                    self.is_left_clicked = false;
+                    self.pen_pressure = 1.0;
+                    if self.touchpad_pressure_stage <= 0 {
+                        self.has_tablet_input = false;
+                    }
+                    return true;
+                }
+                TouchPhase::Moved => {
+                    if self.is_left_clicked && !self.egui_ctx.egui_wants_pointer_input() {
+                        if !self.is_space_pressed && !self.is_alt_pressed {
+                            self.paint_at_cursor();
+                        }
+                    }
+                    return true;
+                }
+            }
+        }
+
+        if let WindowEvent::TouchpadPressure { pressure, stage, .. } = event {
+            self.touchpad_pressure_stage = *stage;
+            if *stage > 0 {
+                self.has_tablet_input = true;
+                self.pen_pressure = pressure.clamp(0.0, 1.0);
+            } else {
+                self.pen_pressure = 1.0;
+                if !self.is_left_clicked {
+                    self.has_tablet_input = false;
+                }
+            }
+            log::debug!(
+                "Touchpad pressure: pressure={:.3}, stage={}",
+                self.pen_pressure,
+                self.touchpad_pressure_stage
+            );
         }
 
         match event {
@@ -779,6 +884,11 @@ impl State {
                     });
 
                     ui.separator();
+                    if ui.button("Calibrate Pressure…").clicked() {
+                        self.show_pressure_calibration = true;
+                    }
+
+                    ui.separator();
                     ui.label("Color:");
                     
                     let mut color_f32 = [
@@ -1218,6 +1328,81 @@ impl State {
                 });
             });
         });
+
+        if self.show_pressure_calibration {
+            let mut is_open = self.show_pressure_calibration;
+            let egui_ctx = self.egui_ctx.clone();
+            egui::Window::new("Pressure Calibration")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .open(&mut is_open)
+                .show(&egui_ctx, |ui| {
+                    ui.label("Adjust pressure response curve");
+                    ui.add_space(4.0);
+
+                    let mut min_start = self.pressure_curve_min_start;
+                    let mut max_at = self.pressure_curve_max_at;
+
+                    ui.horizontal(|ui| {
+                        ui.label("Min start");
+                        ui.add(egui::Slider::new(&mut min_start, 0.0..=1.0));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Max at");
+                        ui.add(egui::Slider::new(&mut max_at, 0.0..=1.0));
+                    });
+
+                    if min_start >= max_at {
+                        if min_start == self.pressure_curve_min_start {
+                            max_at = (min_start + 0.001).min(1.0);
+                        } else {
+                            min_start = (max_at - 0.001).max(0.0);
+                        }
+                    }
+                    self.pressure_curve_min_start = min_start;
+                    self.pressure_curve_max_at = max_at;
+
+                    let calibrated = self.calibrated_pressure();
+                    ui.separator();
+                    ui.label(format!(
+                        "Current pressure: {:.3} (mapped: {:.3})",
+                        self.pen_pressure,
+                        calibrated
+                    ));
+                    if self.touchpad_pressure_stage > 0 {
+                        ui.label(format!("Force click stage: {}", self.touchpad_pressure_stage));
+                    }
+
+                    let graph_size = egui::vec2(320.0, 140.0);
+                    let (rect, _) = ui.allocate_exact_size(graph_size, egui::Sense::hover());
+                    let painter = ui.painter_at(rect);
+                    let bg = egui::Color32::from_gray(20);
+                    let stroke = egui::Stroke::new(1.0, egui::Color32::GRAY);
+                    painter.rect_filled(rect, 4.0, bg);
+                    painter.rect_stroke(rect, 4.0, stroke, egui::StrokeKind::Inside);
+
+                    let to_screen = |x: f32, y: f32| -> egui::Pos2 {
+                        egui::pos2(
+                            egui::lerp(rect.left()..=rect.right(), x.clamp(0.0, 1.0)),
+                            egui::lerp(rect.bottom()..=rect.top(), y.clamp(0.0, 1.0)),
+                        )
+                    };
+
+                    let line_color = egui::Color32::from_rgb(120, 200, 255);
+                    let curve = vec![
+                        to_screen(0.0, 0.0),
+                        to_screen(self.pressure_curve_min_start, 0.0),
+                        to_screen(self.pressure_curve_max_at, 1.0),
+                        to_screen(1.0, 1.0),
+                    ];
+                    painter.add(egui::Shape::line(curve, egui::Stroke::new(2.0, line_color)));
+
+                    let marker = to_screen(self.pen_pressure, calibrated);
+                    painter.circle_filled(marker, 4.0, egui::Color32::YELLOW);
+                });
+            self.show_pressure_calibration = is_open;
+        }
 
         if let Some(undo_state) = undo_state_to_push {
             self.redo_stack.clear();

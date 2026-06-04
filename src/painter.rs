@@ -27,6 +27,8 @@ pub struct StrokePoint {
 pub struct PaintStroke {
     pub points: Vec<glam::Vec3>,
     pub uv_points: Vec<glam::Vec2>,
+    pub point_radii: Vec<f32>,
+    pub point_alphas: Vec<u8>,
     pub color: [u8; 4],
     pub radius: f32,
     pub hardness: f32,
@@ -1176,21 +1178,20 @@ impl Painter {
         num_udim_tiles: u32,
     ) {
         if stroke.uv_points.is_empty() { return; }
-        
-        let color_f32 = [
+
+        let rgb = [
             stroke.color[0] as f32 / 255.0,
             stroke.color[1] as f32 / 255.0,
             stroke.color[2] as f32 / 255.0,
-            stroke.color[3] as f32 / 255.0,
         ];
-        
-        let uv_radius_x = stroke.radius / self.width as f32;
         let mut tile_stamps: Vec<Vec<StampInstance>> = vec![Vec::new(); MAX_UDIMS];
 
         let w = num_udim_tiles as f32;
 
-        let mut add_stamp_udim = |x: f32, y: f32| {
+        let mut add_stamp_udim = |x: f32, y: f32, radius: f32, alpha: u8| {
+            let uv_radius_x = radius / self.width as f32;
             let wrapped_x = x.rem_euclid(w);
+            let color_f32 = [rgb[0], rgb[1], rgb[2], alpha as f32 / 255.0];
 
             let x_min = wrapped_x - uv_radius_x;
             let x_max = wrapped_x + uv_radius_x;
@@ -1203,7 +1204,7 @@ impl Painter {
                     tile_stamps[t as usize].push(StampInstance {
                         position: [local_x, y],
                         color: color_f32,
-                        radius: stroke.radius,
+                        radius,
                         hardness: stroke.hardness,
                     });
                 }
@@ -1222,7 +1223,7 @@ impl Painter {
                         tile_stamps[t as usize].push(StampInstance {
                             position: [local_x, y],
                             color: color_f32,
-                            radius: stroke.radius,
+                            radius,
                             hardness: stroke.hardness,
                         });
                     }
@@ -1240,7 +1241,7 @@ impl Painter {
                         tile_stamps[t as usize].push(StampInstance {
                             position: [local_x, y],
                             color: color_f32,
-                            radius: stroke.radius,
+                            radius,
                             hardness: stroke.hardness,
                         });
                     }
@@ -1248,15 +1249,26 @@ impl Painter {
             }
         };
 
+        let point_radius = |idx: usize| -> f32 {
+            stroke.point_radii.get(idx).copied().unwrap_or(stroke.radius)
+        };
+        let point_alpha = |idx: usize| -> u8 {
+            stroke.point_alphas.get(idx).copied().unwrap_or(stroke.color[3])
+        };
+
         let points_count = stroke.uv_points.len();
         if points_count == 1 {
-            add_stamp_udim(stroke.uv_points[0].x, stroke.uv_points[0].y);
+            add_stamp_udim(stroke.uv_points[0].x, stroke.uv_points[0].y, point_radius(0), point_alpha(0));
         } else {
             for i in 0..points_count - 1 {
                 let from = stroke.uv_points[i];
                 let to = stroke.uv_points[i + 1];
                 let f3d = stroke.points.get(i).copied();
                 let t3d = stroke.points.get(i + 1).copied();
+                let from_radius = point_radius(i);
+                let to_radius = point_radius(i + 1);
+                let from_alpha = point_alpha(i) as f32;
+                let to_alpha = point_alpha(i + 1) as f32;
 
                 let is_wrap = if let (Some(f3d_pt), Some(t3d_pt)) = (f3d, t3d) {
                     let dist_3d = f3d_pt.distance(t3d_pt);
@@ -1276,17 +1288,20 @@ impl Painter {
                 let to_px_effective = (from + glam::Vec2::new(dx, dy)) * glam::Vec2::new(self.width as f32, self.height as f32);
                 let dist = from_px.distance(to_px_effective);
 
-                let step_size = (stroke.radius * 0.1).max(1.0);
+                let avg_radius = 0.5 * (from_radius + to_radius);
+                let step_size = (avg_radius * 0.1).max(1.0);
                 let num_steps = (dist / step_size).ceil() as u32;
 
                 if num_steps <= 1 {
-                    add_stamp_udim(to.x, to.y);
+                    add_stamp_udim(to.x, to.y, to_radius, to_alpha as u8);
                 } else {
                     for step in 0..=num_steps {
                         let t = step as f32 / num_steps as f32;
                         let x = from.x + dx * t;
                         let y = from.y + dy * t;
-                        add_stamp_udim(x, y);
+                        let radius = from_radius + (to_radius - from_radius) * t;
+                        let alpha = (from_alpha + (to_alpha - from_alpha) * t).round().clamp(0.0, 255.0) as u8;
+                        add_stamp_udim(x, y, radius, alpha);
                     }
                 }
             }
