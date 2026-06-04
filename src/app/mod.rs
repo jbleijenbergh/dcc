@@ -67,19 +67,21 @@ pub struct State {
 }
 
 impl State {
-    pub async fn new(window: Arc<Window>) -> Self {
+    pub async fn new(window: Arc<Window>) -> Result<Self, String> {
         let size = window.inner_size();
         log::info!("Creating State with window size: {}x{}", size.width, size.height);
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::VULKAN,
+            backends: wgpu::Backends::PRIMARY,
             flags: wgpu::InstanceFlags::default(),
             backend_options: wgpu::BackendOptions::default(),
             display: None,
             memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
         });
 
-        let surface = instance.create_surface(window.clone()).unwrap();
+        let surface = instance
+            .create_surface(window.clone())
+            .map_err(|e| format!("Failed to create WGPU surface: {e:?}"))?;
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -88,7 +90,7 @@ impl State {
                 force_fallback_adapter: false,
             })
             .await
-            .unwrap();
+            .map_err(|e| format!("Failed to request WGPU adapter: {e:?}"))?;
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
@@ -100,7 +102,7 @@ impl State {
                 trace: wgpu::Trace::Off,
             })
             .await
-            .unwrap();
+            .map_err(|e| format!("Failed to create WGPU device: {e:?}"))?;
         let device = Arc::new(device);
 
         let surface_caps = surface.get_capabilities(&adapter);
@@ -162,7 +164,7 @@ impl State {
             },
         );
 
-        Self {
+        Ok(Self {
             window,
             surface,
             device,
@@ -201,7 +203,7 @@ impl State {
             error_details: None,
             error_time: None,
             loading_path: None,
-        }
+        })
     }
 
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
