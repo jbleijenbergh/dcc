@@ -50,6 +50,12 @@ pub struct State {
     pub show_uv_wireframe: bool,
     pub uv_viewer: Option<UvViewerWindow>,
 
+    // Undo/Redo stacks and keyboard modifiers
+    undo_stack: Vec<UndoState>,
+    redo_stack: Vec<UndoState>,
+    is_ctrl_pressed: bool,
+    is_cmd_pressed: bool,
+
     // Camera movement/interaction mouse state
     is_left_clicked: bool,
     is_right_clicked: bool,
@@ -203,6 +209,10 @@ impl State {
             uv_viewer_size: 256.0,
             show_uv_wireframe: true,
             uv_viewer: None,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            is_ctrl_pressed: false,
+            is_cmd_pressed: false,
             is_left_clicked: false,
             is_right_clicked: false,
             last_mouse_pos: winit::dpi::PhysicalPosition::new(0.0, 0.0),
@@ -248,6 +258,7 @@ impl State {
             if let Some(stroke) = self.current_stroke.take() {
                 let active = self.painter.active_layer_idx;
                 if active < self.painter.layers.len() && !self.painter.layers[active].is_fill {
+                    self.push_undo_state();
                     self.painter.layers[active].strokes.push(stroke);
                     log::info!("Committed stroke to layer {}, total strokes: {}",
                         self.painter.layers[active].name,
@@ -288,6 +299,36 @@ impl State {
                         self.is_alt_pressed = pressed;
                         true
                     }
+                    winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::ControlLeft) |
+                    winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::ControlRight) => {
+                        self.is_ctrl_pressed = pressed;
+                        true
+                    }
+                    winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::SuperLeft) |
+                    winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::SuperRight) => {
+                        self.is_cmd_pressed = pressed;
+                        true
+                    }
+                    winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyZ) => {
+                        if pressed {
+                            let modifier = self.is_ctrl_pressed || self.is_cmd_pressed;
+                            if modifier {
+                                self.undo();
+                                return true;
+                            }
+                        }
+                        false
+                    }
+                    winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyY) => {
+                        if pressed {
+                            let modifier = self.is_ctrl_pressed || self.is_cmd_pressed;
+                            if modifier {
+                                self.redo();
+                                return true;
+                            }
+                        }
+                        false
+                    }
                     winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::BracketLeft) => {
                         if pressed {
                             self.brush_size = (self.brush_size - 5.0).max(2.0);
@@ -304,6 +345,7 @@ impl State {
                     }
                     winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyC) => {
                         if pressed {
+                            self.push_undo_state();
                             self.painter.clear_all_layers(&self.device, &self.queue);
                             log::info!("Cleared canvas");
                         }
@@ -509,6 +551,19 @@ impl State {
 
     #[allow(deprecated)]
     pub fn render(&mut self) -> Result<(), SurfaceError> {
+        let layers_snapshot = self.painter.layers.clone();
+        let active_idx_snapshot = self.painter.active_layer_idx;
+        let mut undo_state_to_push: Option<UndoState> = None;
+        let mut undo_requested = false;
+        let mut redo_requested = false;
+
+        let push_undo_snapshot = || {
+            UndoState {
+                layers: layers_snapshot.clone(),
+                active_layer_idx: active_idx_snapshot,
+            }
+        };
+
         let egui_input = self.egui_state.take_egui_input(&*self.window);
         self.egui_ctx.begin_pass(egui_input);
 
@@ -598,6 +653,22 @@ impl State {
                     ui.separator();
                     if ui.button("Exit").clicked() {
                         std::process::exit(0);
+                    }
+                });
+
+                ui.menu_button("Edit", |ui| {
+                    let undo_enabled = !self.undo_stack.is_empty();
+                    let undo_label = if undo_enabled { "Undo (Ctrl+Z)" } else { "Undo" };
+                    if ui.add_enabled(undo_enabled, egui::Button::new(undo_label)).clicked() {
+                        undo_requested = true;
+                        ui.close();
+                    }
+                    
+                    let redo_enabled = !self.redo_stack.is_empty();
+                    let redo_label = if redo_enabled { "Redo (Ctrl+Y)" } else { "Redo" };
+                    if ui.add_enabled(redo_enabled, egui::Button::new(redo_label)).clicked() {
+                        redo_requested = true;
+                        ui.close();
                     }
                 });
 
@@ -734,6 +805,7 @@ impl State {
                     ui.horizontal(|ui| {
                         ui.text_edit_singleline(&mut self.new_layer_name);
                         if ui.button("Add").clicked() && !self.new_layer_name.trim().is_empty() {
+                            undo_state_to_push = Some(push_undo_snapshot());
                             self.painter.add_paint_layer(self.new_layer_name.trim().to_string(), &self.device, &self.queue);
                             self.new_layer_name.clear();
                         }
@@ -741,14 +813,17 @@ impl State {
 
                     ui.horizontal(|ui| {
                         if ui.button("Add UV Grid Layer").clicked() {
+                            undo_state_to_push = Some(push_undo_snapshot());
                             self.painter.load_uv_grid_layer(&self.device, &self.queue);
                         }
                         if ui.button("Add UV Checker Layer").clicked() {
+                            undo_state_to_push = Some(push_undo_snapshot());
                             self.painter.load_uv_checker_layer(&self.device, &self.queue);
                         }
                     });
 
                     if ui.button("✨ Add Fill Layer").clicked() {
+                        undo_state_to_push = Some(push_undo_snapshot());
                         let name = format!("Fill {}", self.painter.layers.len() + 1);
                         self.painter.add_fill_layer(name, &self.device, &self.queue, &self.viewport.document);
                     }
@@ -767,6 +842,7 @@ impl State {
 
                             let mut visible = self.painter.layers[idx].visible;
                             if ui.checkbox(&mut visible, "").changed() {
+                                undo_state_to_push = Some(push_undo_snapshot());
                                 self.painter.layers[idx].visible = visible;
                                 self.painter.compose_layers(&self.device, &self.queue);
                             }
@@ -789,14 +865,17 @@ impl State {
                                         .selected_text(blend.to_str())
                                         .show_ui(ui, |ui| {
                                             if ui.selectable_value(&mut blend, BlendMode::Normal, "Normal").changed() {
+                                                undo_state_to_push = Some(push_undo_snapshot());
                                                 self.painter.layers[idx].blend_mode = blend;
                                                 self.painter.compose_layers(&self.device, &self.queue);
                                             }
                                             if ui.selectable_value(&mut blend, BlendMode::Multiply, "Multiply").changed() {
+                                                undo_state_to_push = Some(push_undo_snapshot());
                                                 self.painter.layers[idx].blend_mode = blend;
                                                 self.painter.compose_layers(&self.device, &self.queue);
                                             }
                                             if ui.selectable_value(&mut blend, BlendMode::Add, "Add").changed() {
+                                                undo_state_to_push = Some(push_undo_snapshot());
                                                 self.painter.layers[idx].blend_mode = blend;
                                                 self.painter.compose_layers(&self.device, &self.queue);
                                             }
@@ -806,7 +885,11 @@ impl State {
                                 ui.horizontal(|ui| {
                                     ui.label("Opacity:");
                                     let mut op = self.painter.layers[idx].opacity;
-                                    if ui.add(egui::Slider::new(&mut op, 0.0..=1.0)).changed() {
+                                    let response = ui.add(egui::Slider::new(&mut op, 0.0..=1.0));
+                                    if response.drag_started() {
+                                        undo_state_to_push = Some(push_undo_snapshot());
+                                    }
+                                    if response.changed() {
                                         self.painter.layers[idx].opacity = op;
                                         self.painter.compose_layers(&self.device, &self.queue);
                                     }
@@ -824,7 +907,11 @@ impl State {
                                             self.painter.layers[idx].fill_color[2] as f32 / 255.0,
                                             self.painter.layers[idx].fill_color[3] as f32 / 255.0,
                                         ];
-                                        if ui.color_edit_button_rgba_unmultiplied(&mut c).changed() {
+                                        let response = ui.color_edit_button_rgba_unmultiplied(&mut c);
+                                        if response.drag_started() {
+                                            undo_state_to_push = Some(push_undo_snapshot());
+                                        }
+                                        if response.changed() {
                                             self.painter.layers[idx].fill_color = [
                                                 (c[0] * 255.0) as u8, (c[1] * 255.0) as u8,
                                                 (c[2] * 255.0) as u8, (c[3] * 255.0) as u8,
@@ -841,7 +928,11 @@ impl State {
                                             self.painter.layers[idx].fill_noise_color[2] as f32 / 255.0,
                                             self.painter.layers[idx].fill_noise_color[3] as f32 / 255.0,
                                         ];
-                                        if ui.color_edit_button_rgba_unmultiplied(&mut c).changed() {
+                                        let response = ui.color_edit_button_rgba_unmultiplied(&mut c);
+                                        if response.drag_started() {
+                                            undo_state_to_push = Some(push_undo_snapshot());
+                                        }
+                                        if response.changed() {
                                             self.painter.layers[idx].fill_noise_color = [
                                                 (c[0] * 255.0) as u8, (c[1] * 255.0) as u8,
                                                 (c[2] * 255.0) as u8, (c[3] * 255.0) as u8,
@@ -853,7 +944,11 @@ impl State {
                                     ui.horizontal(|ui| {
                                         ui.label("Noise Scale:");
                                         let mut scale = self.painter.layers[idx].fill_noise_scale;
-                                        if ui.add(egui::Slider::new(&mut scale, 0.5..=50.0)).changed() {
+                                        let response = ui.add(egui::Slider::new(&mut scale, 0.5..=50.0));
+                                        if response.drag_started() {
+                                            undo_state_to_push = Some(push_undo_snapshot());
+                                        }
+                                        if response.changed() {
                                             self.painter.layers[idx].fill_noise_scale = scale;
                                             fill_changed = true;
                                         }
@@ -870,6 +965,7 @@ impl State {
                                                 ui.selectable_value(&mut mode, 1u32, "Triplanar");
                                             });
                                         if mode != prev_mode {
+                                            undo_state_to_push = Some(push_undo_snapshot());
                                             self.painter.layers[idx].fill_projection_mode = mode;
                                             fill_changed = true;
                                         }
@@ -1123,7 +1219,24 @@ impl State {
             });
         });
 
+        if let Some(undo_state) = undo_state_to_push {
+            self.redo_stack.clear();
+            self.undo_stack.push(undo_state);
+            if self.undo_stack.len() > 50 {
+                self.undo_stack.remove(0);
+            }
+        }
+
+        if undo_requested {
+            self.undo();
+        }
+
+        if redo_requested {
+            self.redo();
+        }
+
         if clear_requested {
+            self.push_undo_state();
             self.painter.clear_all_layers(&self.device, &self.queue);
         }
 
@@ -1132,6 +1245,7 @@ impl State {
         }
 
         if let Some(mesh_type) = geometry_to_switch {
+            self.push_undo_state();
             self.toggle_mesh(mesh_type);
         }
 
@@ -1140,6 +1254,7 @@ impl State {
         }
 
         if recompute_uv_requested {
+            self.push_undo_state();
             self.recompute_and_reproject();
         }
 
@@ -1269,6 +1384,7 @@ impl State {
         let show_uv_wireframe = self.show_uv_wireframe;
         let active_nodes = self.viewport.document.get_active_nodes();
         
+        #[allow(deprecated)]
         egui::CentralPanel::default().show(&viewer.egui_ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label("Source:");
@@ -1473,6 +1589,57 @@ impl State {
             }
         }
     }
+
+    pub fn push_undo_state(&mut self) {
+        // Clear redo stack when a new action is performed
+        self.redo_stack.clear();
+        
+        let undo_state = UndoState {
+            layers: self.painter.layers.clone(),
+            active_layer_idx: self.painter.active_layer_idx,
+        };
+        self.undo_stack.push(undo_state);
+        
+        if self.undo_stack.len() > 50 {
+            self.undo_stack.remove(0);
+        }
+    }
+
+    pub fn undo(&mut self) {
+        if let Some(prev_state) = self.undo_stack.pop() {
+            let current_state = UndoState {
+                layers: self.painter.layers.clone(),
+                active_layer_idx: self.painter.active_layer_idx,
+            };
+            self.redo_stack.push(current_state);
+            
+            self.painter.layers = prev_state.layers;
+            self.painter.active_layer_idx = prev_state.active_layer_idx;
+            
+            self.painter.redraw_all_layers(&self.device, &self.queue, &self.viewport.document);
+            log::info!("Performed Undo. Undo stack size: {}, Redo stack size: {}", self.undo_stack.len(), self.redo_stack.len());
+        } else {
+            log::info!("Nothing to undo");
+        }
+    }
+
+    pub fn redo(&mut self) {
+        if let Some(next_state) = self.redo_stack.pop() {
+            let current_state = UndoState {
+                layers: self.painter.layers.clone(),
+                active_layer_idx: self.painter.active_layer_idx,
+            };
+            self.undo_stack.push(current_state);
+            
+            self.painter.layers = next_state.layers;
+            self.painter.active_layer_idx = next_state.active_layer_idx;
+            
+            self.painter.redraw_all_layers(&self.device, &self.queue, &self.viewport.document);
+            log::info!("Performed Redo. Undo stack size: {}, Redo stack size: {}", self.undo_stack.len(), self.redo_stack.len());
+        } else {
+            log::info!("Nothing to redo");
+        }
+    }
 }
 
 pub struct UvViewerWindow {
@@ -1484,4 +1651,10 @@ pub struct UvViewerWindow {
     pub egui_renderer: egui_wgpu::Renderer,
     pub composite_tex_ids: Vec<egui::TextureId>,
     pub layer_tex_ids: Vec<egui::TextureId>,
+}
+
+#[derive(Clone)]
+struct UndoState {
+    layers: Vec<crate::painter::Layer>,
+    active_layer_idx: usize,
 }

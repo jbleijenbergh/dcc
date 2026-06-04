@@ -33,6 +33,7 @@ pub struct PaintStroke {
     pub is_eraser: bool,
 }
 
+#[derive(Clone)]
 pub struct Layer {
     pub name: String,
     pub opacity: f32,
