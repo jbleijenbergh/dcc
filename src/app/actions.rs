@@ -57,10 +57,13 @@ impl State {
                     &self.queue,
                     last_uv,
                     hit.uv,
+                    self.last_hit_pos,
+                    Some(hit.point),
                     brush_rgba,
                     self.brush_size,
                     self.brush_hardness,
                     is_eraser,
+                    self.viewport.document.num_udim_tiles,
                 );
             } else {
                 log::info!(
@@ -77,14 +80,17 @@ impl State {
                     &self.device,
                     &self.queue,
                     hit.uv,
+                    Some(hit.point),
                     brush_rgba,
                     self.brush_size,
                     self.brush_hardness,
                     is_eraser,
+                    self.viewport.document.num_udim_tiles,
                 );
             }
             let paint_duration = paint_start.elapsed();
             self.last_hit_uv = Some(hit.uv);
+            self.last_hit_pos = Some(hit.point);
 
             log::debug!(
                 "Paint stroke timing: raycast={:?}, paint={:?}, total={:?}",
@@ -95,6 +101,7 @@ impl State {
             self.window.request_redraw();
         } else {
             self.last_hit_uv = None;
+            self.last_hit_pos = None;
         }
     }
 

@@ -52,6 +52,7 @@ pub struct State {
 
     // Stroke tracking
     last_hit_uv: Option<glam::Vec2>,
+    last_hit_pos: Option<glam::Vec3>,
 
     // Async loading state
     gltf_rx: Option<std::sync::mpsc::Receiver<Result<(crate::mesh::Document, String), String>>>,
@@ -189,6 +190,7 @@ impl State {
             is_space_pressed: false,
             is_alt_pressed: false,
             last_hit_uv: None,
+            last_hit_pos: None,
             gltf_rx: None,
             is_loading_gltf: false,
             import_settings: crate::mesh::ImportSettings {
@@ -233,6 +235,7 @@ impl State {
                 }
             }
             self.last_hit_uv = None;
+            self.last_hit_pos = None;
             self.is_left_clicked = false;
         }
 
@@ -300,6 +303,7 @@ impl State {
                         self.is_left_clicked = pressed;
                         if !pressed {
                             self.last_hit_uv = None;
+                            self.last_hit_pos = None;
                         } else {
                             if !self.is_space_pressed && !self.is_alt_pressed {
                                 self.paint_at_cursor();
@@ -331,6 +335,7 @@ impl State {
                         self.viewport.camera.pitch = (self.viewport.camera.pitch + (dy * 0.005) as f32)
                             .clamp(-std::f32::consts::FRAC_PI_2 + 0.05, std::f32::consts::FRAC_PI_2 - 0.05);
                         self.last_hit_uv = None;
+                        self.last_hit_pos = None;
                     } else {
                         self.paint_at_cursor();
                     }

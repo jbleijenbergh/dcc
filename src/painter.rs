@@ -903,14 +903,15 @@ impl Painter {
         queue: &wgpu::Queue,
         from: glam::Vec2,
         to: glam::Vec2,
+        from_3d: Option<glam::Vec3>,
+        to_3d: Option<glam::Vec3>,
         color: [u8; 4],
         radius: f32,
         hardness: f32,
         is_eraser: bool,
+        num_udim_tiles: u32,
     ) {
         let total_start = std::time::Instant::now();
-        let from_px = from * glam::Vec2::new(self.width as f32, self.height as f32);
-        let to_px = to * glam::Vec2::new(self.width as f32, self.height as f32);
         
         let color_f32 = [
             color[0] as f32 / 255.0,
@@ -922,15 +923,19 @@ impl Painter {
         let uv_radius_x = radius / self.width as f32;
         let mut tile_stamps: Vec<Vec<StampInstance>> = vec![Vec::new(); MAX_UDIMS];
 
+        let w = num_udim_tiles as f32;
+
         let mut add_stamp_udim = |x: f32, y: f32| {
-            let x_min = x - uv_radius_x;
-            let x_max = x + uv_radius_x;
+            let wrapped_x = x.rem_euclid(w);
+
+            let x_min = wrapped_x - uv_radius_x;
+            let x_max = wrapped_x + uv_radius_x;
             let start_tile = x_min.floor() as i32;
             let end_tile = x_max.floor() as i32;
 
             for t in start_tile..=end_tile {
                 if t >= 0 && t < MAX_UDIMS as i32 {
-                    let local_x = x - t as f32;
+                    let local_x = wrapped_x - t as f32;
                     tile_stamps[t as usize].push(StampInstance {
                         position: [local_x, y],
                         color: color_f32,
@@ -939,10 +944,66 @@ impl Painter {
                     });
                 }
             }
+
+            // --- SEAM CROSSING SUPPORT ---
+            if wrapped_x - uv_radius_x < 0.0 {
+                let wrapped_x_right = wrapped_x + w;
+                let x_min_r = wrapped_x_right - uv_radius_x;
+                let x_max_r = wrapped_x_right + uv_radius_x;
+                let start_tile_r = x_min_r.floor() as i32;
+                let end_tile_r = x_max_r.floor() as i32;
+                for t in start_tile_r..=end_tile_r {
+                    if t >= 0 && t < MAX_UDIMS as i32 {
+                        let local_x = wrapped_x_right - t as f32;
+                        tile_stamps[t as usize].push(StampInstance {
+                            position: [local_x, y],
+                            color: color_f32,
+                            radius,
+                            hardness,
+                        });
+                    }
+                }
+            }
+            if wrapped_x + uv_radius_x > w {
+                let wrapped_x_left = wrapped_x - w;
+                let x_min_l = wrapped_x_left - uv_radius_x;
+                let x_max_l = wrapped_x_left + uv_radius_x;
+                let start_tile_l = x_min_l.floor() as i32;
+                let end_tile_l = x_max_l.floor() as i32;
+                for t in start_tile_l..=end_tile_l {
+                    if t >= 0 && t < MAX_UDIMS as i32 {
+                        let local_x = wrapped_x_left - t as f32;
+                        tile_stamps[t as usize].push(StampInstance {
+                            position: [local_x, y],
+                            color: color_f32,
+                            radius,
+                            hardness,
+                        });
+                    }
+                }
+            }
         };
 
         let accum_start = std::time::Instant::now();
-        let dist = from_px.distance(to_px);
+        
+        let is_wrap = if let (Some(f3d), Some(t3d)) = (from_3d, to_3d) {
+            let dist_3d = f3d.distance(t3d);
+            let dist_uv = (to.x - from.x).abs();
+            dist_3d < 0.5 && dist_uv > 0.5 * w
+        } else {
+            false
+        };
+
+        let mut dx = to.x - from.x;
+        let dy = to.y - from.y;
+        if is_wrap {
+            dx = dx - w * (dx / w).round();
+        }
+
+        let from_px = from * glam::Vec2::new(self.width as f32, self.height as f32);
+        let to_px_effective = (from + glam::Vec2::new(dx, dy)) * glam::Vec2::new(self.width as f32, self.height as f32);
+        let dist = from_px.distance(to_px_effective);
+
         let step_size = (radius * 0.1).max(1.0);
         let num_steps = (dist / step_size).ceil() as u32;
 
@@ -951,8 +1012,8 @@ impl Painter {
         } else {
             for step in 0..=num_steps {
                 let t = step as f32 / num_steps as f32;
-                let x = from.x + (to.x - from.x) * t;
-                let y = from.y + (to.y - from.y) * t;
+                let x = from.x + dx * t;
+                let y = from.y + dy * t;
                 add_stamp_udim(x, y);
             }
         }
@@ -1014,8 +1075,31 @@ impl Painter {
         );
     }
 
-    pub fn paint_stamp(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, uv: glam::Vec2, color: [u8; 4], radius: f32, hardness: f32, is_eraser: bool) {
-        self.paint_stroke(device, queue, uv, uv, color, radius, hardness, is_eraser);
+    pub fn paint_stamp(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        uv: glam::Vec2,
+        pos: Option<glam::Vec3>,
+        color: [u8; 4],
+        radius: f32,
+        hardness: f32,
+        is_eraser: bool,
+        num_udim_tiles: u32,
+    ) {
+        self.paint_stroke(
+            device,
+            queue,
+            uv,
+            uv,
+            pos,
+            pos,
+            color,
+            radius,
+            hardness,
+            is_eraser,
+            num_udim_tiles,
+        );
     }
 
     pub fn paint_stroke_udim_to_layer(
@@ -1024,6 +1108,7 @@ impl Painter {
         queue: &wgpu::Queue,
         layer_idx: usize,
         stroke: &PaintStroke,
+        num_udim_tiles: u32,
     ) {
         if stroke.uv_points.is_empty() { return; }
         
@@ -1037,21 +1122,63 @@ impl Painter {
         let uv_radius_x = stroke.radius / self.width as f32;
         let mut tile_stamps: Vec<Vec<StampInstance>> = vec![Vec::new(); MAX_UDIMS];
 
+        let w = num_udim_tiles as f32;
+
         let mut add_stamp_udim = |x: f32, y: f32| {
-            let x_min = x - uv_radius_x;
-            let x_max = x + uv_radius_x;
+            let wrapped_x = x.rem_euclid(w);
+
+            let x_min = wrapped_x - uv_radius_x;
+            let x_max = wrapped_x + uv_radius_x;
             let start_tile = x_min.floor() as i32;
             let end_tile = x_max.floor() as i32;
 
             for t in start_tile..=end_tile {
                 if t >= 0 && t < MAX_UDIMS as i32 {
-                    let local_x = x - t as f32;
+                    let local_x = wrapped_x - t as f32;
                     tile_stamps[t as usize].push(StampInstance {
                         position: [local_x, y],
                         color: color_f32,
                         radius: stroke.radius,
                         hardness: stroke.hardness,
                     });
+                }
+            }
+
+            // --- SEAM CROSSING SUPPORT ---
+            if wrapped_x - uv_radius_x < 0.0 {
+                let wrapped_x_right = wrapped_x + w;
+                let x_min_r = wrapped_x_right - uv_radius_x;
+                let x_max_r = wrapped_x_right + uv_radius_x;
+                let start_tile_r = x_min_r.floor() as i32;
+                let end_tile_r = x_max_r.floor() as i32;
+                for t in start_tile_r..=end_tile_r {
+                    if t >= 0 && t < MAX_UDIMS as i32 {
+                        let local_x = wrapped_x_right - t as f32;
+                        tile_stamps[t as usize].push(StampInstance {
+                            position: [local_x, y],
+                            color: color_f32,
+                            radius: stroke.radius,
+                            hardness: stroke.hardness,
+                        });
+                    }
+                }
+            }
+            if wrapped_x + uv_radius_x > w {
+                let wrapped_x_left = wrapped_x - w;
+                let x_min_l = wrapped_x_left - uv_radius_x;
+                let x_max_l = wrapped_x_left + uv_radius_x;
+                let start_tile_l = x_min_l.floor() as i32;
+                let end_tile_l = x_max_l.floor() as i32;
+                for t in start_tile_l..=end_tile_l {
+                    if t >= 0 && t < MAX_UDIMS as i32 {
+                        let local_x = wrapped_x_left - t as f32;
+                        tile_stamps[t as usize].push(StampInstance {
+                            position: [local_x, y],
+                            color: color_f32,
+                            radius: stroke.radius,
+                            hardness: stroke.hardness,
+                        });
+                    }
                 }
             }
         };
@@ -1063,8 +1190,27 @@ impl Painter {
             for i in 0..points_count - 1 {
                 let from = stroke.uv_points[i];
                 let to = stroke.uv_points[i + 1];
+                let f3d = stroke.points.get(i).copied();
+                let t3d = stroke.points.get(i + 1).copied();
 
-                let dist = from.distance(to) * self.width as f32;
+                let is_wrap = if let (Some(f3d_pt), Some(t3d_pt)) = (f3d, t3d) {
+                    let dist_3d = f3d_pt.distance(t3d_pt);
+                    let dist_uv = (to.x - from.x).abs();
+                    dist_3d < 0.5 && dist_uv > 0.5 * w
+                } else {
+                    false
+                };
+
+                let mut dx = to.x - from.x;
+                let dy = to.y - from.y;
+                if is_wrap {
+                    dx = dx - w * (dx / w).round();
+                }
+
+                let from_px = from * glam::Vec2::new(self.width as f32, self.height as f32);
+                let to_px_effective = (from + glam::Vec2::new(dx, dy)) * glam::Vec2::new(self.width as f32, self.height as f32);
+                let dist = from_px.distance(to_px_effective);
+
                 let step_size = (stroke.radius * 0.1).max(1.0);
                 let num_steps = (dist / step_size).ceil() as u32;
 
@@ -1073,8 +1219,8 @@ impl Painter {
                 } else {
                     for step in 0..=num_steps {
                         let t = step as f32 / num_steps as f32;
-                        let x = from.x + (to.x - from.x) * t;
-                        let y = from.y + (to.y - from.y) * t;
+                        let x = from.x + dx * t;
+                        let y = from.y + dy * t;
                         add_stamp_udim(x, y);
                     }
                 }
@@ -1228,7 +1374,7 @@ impl Painter {
             } else {
                 let strokes = self.layers[idx].strokes.clone();
                 for stroke in &strokes {
-                    self.paint_stroke_udim_to_layer(device, queue, idx, stroke);
+                    self.paint_stroke_udim_to_layer(device, queue, idx, stroke, document.num_udim_tiles);
                 }
             }
         }
