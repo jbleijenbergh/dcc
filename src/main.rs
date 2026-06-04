@@ -22,8 +22,15 @@ impl ApplicationHandler for App {
                     )
                     .unwrap(),
             );
-            let state = pollster::block_on(app::State::new(window));
-            self.state = Some(state);
+            match pollster::block_on(app::State::new(window)) {
+                Ok(state) => {
+                    self.state = Some(state);
+                }
+                Err(e) => {
+                    log::error!("Failed to initialize application state: {}", e);
+                    event_loop.exit();
+                }
+            }
         }
     }
 
