@@ -52,7 +52,7 @@ impl ApplicationHandler for App {
                     WindowEvent::RedrawRequested => {
                         let size = state.window.inner_size();
                         if size.width > 0 && size.height > 0 {
-                            state.update();
+                            state.update(event_loop);
                             match state.render() {
                                 Ok(_) => {}
                                 Err(app::SurfaceError::Lost | app::SurfaceError::Outdated) => {
@@ -67,6 +67,35 @@ impl ApplicationHandler for App {
                     }
                     _ => {}
                 }
+            } else if let Some(ref mut viewer) = state.uv_viewer {
+                if window_id == viewer.window.id() {
+                    let egui_resp = viewer.egui_state.on_window_event(&*viewer.window, &event);
+                    if egui_resp.consumed {
+                        return;
+                    }
+                    match event {
+                        WindowEvent::CloseRequested => {
+                            state.uv_viewer = None;
+                            state.show_uv_viewer = false;
+                        }
+                        WindowEvent::Resized(physical_size) => {
+                            state.resize_uv_viewer(physical_size.width, physical_size.height);
+                        }
+                        WindowEvent::ScaleFactorChanged { .. } => {
+                            let size = viewer.window.inner_size();
+                            state.resize_uv_viewer(size.width, size.height);
+                        }
+                        WindowEvent::RedrawRequested => {
+                            let size = viewer.window.inner_size();
+                            if size.width > 0 && size.height > 0 {
+                                if let Err(e) = state.render_uv_viewer() {
+                                    log::error!("UV viewer render error: {:?}", e);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
             }
         }
     }
@@ -76,6 +105,12 @@ impl ApplicationHandler for App {
             let size = state.window.inner_size();
             if size.width > 0 && size.height > 0 {
                 state.window.request_redraw();
+            }
+            if let Some(ref viewer) = state.uv_viewer {
+                let size = viewer.window.inner_size();
+                if size.width > 0 && size.height > 0 {
+                    viewer.window.request_redraw();
+                }
             }
         }
     }
