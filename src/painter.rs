@@ -1270,50 +1270,188 @@ impl Painter {
 
     pub fn reproject_strokes(&mut self, document: &crate::mesh::Document) {
         let nodes = document.get_active_nodes();
+        let total_strokes: usize = self.layers.iter().map(|l| if l.is_fill { 0 } else { l.strokes.len() }).sum();
+        let mut current_stroke_idx = 0;
+        let start_time = std::time::Instant::now();
         
-        for layer in &mut self.layers {
+        log::info!("Starting synchronous reprojection of {} strokes...", total_strokes);
+
+        let mut triangles = Vec::new();
+        for (node, world_matrix) in &nodes {
+            if let Some(ref mesh) = node.mesh {
+                for primitive in &mesh.primitives {
+                    for chunk in primitive.indices.chunks_exact(3) {
+                        let i0 = chunk[0] as usize;
+                        let i1 = chunk[1] as usize;
+                        let i2 = chunk[2] as usize;
+                        
+                        let v0 = &primitive.vertices[i0];
+                        let v1 = &primitive.vertices[i1];
+                        let v2 = &primitive.vertices[i2];
+                        
+                        let p0 = world_matrix.transform_point3(glam::Vec3::from(v0.position));
+                        let p1 = world_matrix.transform_point3(glam::Vec3::from(v1.position));
+                        let p2 = world_matrix.transform_point3(glam::Vec3::from(v2.position));
+                        
+                        let uv0 = glam::Vec2::from(v0.tex_coords);
+                        let uv1 = glam::Vec2::from(v1.tex_coords);
+                        let uv2 = glam::Vec2::from(v2.tex_coords);
+                        
+                        let center = (p0 + p1 + p2) / 3.0;
+                        let bounds_min = p0.min(p1).min(p2);
+                        let bounds_max = p0.max(p1).max(p2);
+                        
+                        triangles.push(WorldTriangle {
+                            p0, p1, p2,
+                            uv0, uv1, uv2,
+                            center,
+                            bounds_min,
+                            bounds_max,
+                        });
+                    }
+                }
+            }
+        }
+
+        if triangles.is_empty() {
+            for layer in &mut self.layers {
+                if layer.is_fill { continue; }
+                for stroke in &mut layer.strokes {
+                    stroke.uv_points.clear();
+                    for _ in &stroke.points {
+                        stroke.uv_points.push(glam::Vec2::ZERO);
+                    }
+                }
+            }
+            log::info!("Completed synchronous reprojection of strokes (no geometry) in {:?}", start_time.elapsed());
+            return;
+        }
+
+        let bvh = BVHNode::build(triangles);
+        
+        for (layer_idx, layer) in self.layers.iter_mut().enumerate() {
             if layer.is_fill { continue; }
             for stroke in &mut layer.strokes {
+                current_stroke_idx += 1;
+                let stroke_start = std::time::Instant::now();
                 stroke.uv_points.clear();
                 
                 for pt in &stroke.points {
                     let mut closest_uv = glam::Vec2::ZERO;
                     let mut min_dist_sq = f32::MAX;
-                    
-                    for (node, world_matrix) in &nodes {
-                        if let Some(ref mesh) = node.mesh {
-                            for primitive in &mesh.primitives {
-                                for chunk in primitive.indices.chunks_exact(3) {
-                                    let i0 = chunk[0] as usize;
-                                    let i1 = chunk[1] as usize;
-                                    let i2 = chunk[2] as usize;
-                                    
-                                    let v0 = &primitive.vertices[i0];
-                                    let v1 = &primitive.vertices[i1];
-                                    let v2 = &primitive.vertices[i2];
-                                    
-                                    let p0 = world_matrix.transform_point3(glam::Vec3::from(v0.position));
-                                    let p1 = world_matrix.transform_point3(glam::Vec3::from(v1.position));
-                                    let p2 = world_matrix.transform_point3(glam::Vec3::from(v2.position));
-                                    
-                                    let (closest_pt, bary) = closest_point_on_triangle(*pt, p0, p1, p2);
-                                    let dist_sq = pt.distance_squared(closest_pt);
-                                    
-                                    if dist_sq < min_dist_sq {
-                                        min_dist_sq = dist_sq;
-                                        let uv0 = glam::Vec2::from(v0.tex_coords);
-                                        let uv1 = glam::Vec2::from(v1.tex_coords);
-                                        let uv2 = glam::Vec2::from(v2.tex_coords);
-                                        closest_uv = uv0 * bary[0] + uv1 * bary[1] + uv2 * bary[2];
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    bvh.find_closest(*pt, &mut min_dist_sq, &mut closest_uv);
                     stroke.uv_points.push(closest_uv);
+                }
+                log::debug!(
+                    "  Stroke {}/{} on Layer {} ({} points) reprojected in {:?}",
+                    current_stroke_idx,
+                    total_strokes,
+                    layer_idx,
+                    stroke.points.len(),
+                    stroke_start.elapsed()
+                );
+            }
+        }
+        log::info!("Completed synchronous reprojection of strokes in {:?}", start_time.elapsed());
+    }
+
+    pub fn reproject_strokes_in_background(
+        strokes: &mut [Vec<PaintStroke>],
+        document: &crate::mesh::Document,
+        status: &std::sync::Mutex<String>,
+    ) {
+        let nodes = document.get_active_nodes();
+        let total_strokes: usize = strokes.iter().map(|s| s.len()).sum();
+        let mut current_stroke_idx = 0;
+        let start_time = std::time::Instant::now();
+
+        log::info!("Starting background reprojection of {} strokes...", total_strokes);
+
+        let mut triangles = Vec::new();
+        for (node, world_matrix) in &nodes {
+            if let Some(ref mesh) = node.mesh {
+                for primitive in &mesh.primitives {
+                    for chunk in primitive.indices.chunks_exact(3) {
+                        let i0 = chunk[0] as usize;
+                        let i1 = chunk[1] as usize;
+                        let i2 = chunk[2] as usize;
+                        
+                        let v0 = &primitive.vertices[i0];
+                        let v1 = &primitive.vertices[i1];
+                        let v2 = &primitive.vertices[i2];
+                        
+                        let p0 = world_matrix.transform_point3(glam::Vec3::from(v0.position));
+                        let p1 = world_matrix.transform_point3(glam::Vec3::from(v1.position));
+                        let p2 = world_matrix.transform_point3(glam::Vec3::from(v2.position));
+                        
+                        let uv0 = glam::Vec2::from(v0.tex_coords);
+                        let uv1 = glam::Vec2::from(v1.tex_coords);
+                        let uv2 = glam::Vec2::from(v2.tex_coords);
+                        
+                        let center = (p0 + p1 + p2) / 3.0;
+                        let bounds_min = p0.min(p1).min(p2);
+                        let bounds_max = p0.max(p1).max(p2);
+                        
+                        triangles.push(WorldTriangle {
+                            p0, p1, p2,
+                            uv0, uv1, uv2,
+                            center,
+                            bounds_min,
+                            bounds_max,
+                        });
+                    }
                 }
             }
         }
+
+        if triangles.is_empty() {
+            for layer_strokes in strokes.iter_mut() {
+                for stroke in layer_strokes {
+                    stroke.uv_points.clear();
+                    for _ in &stroke.points {
+                        stroke.uv_points.push(glam::Vec2::ZERO);
+                    }
+                }
+            }
+            log::info!("Completed background reprojection of strokes (no geometry) in {:?}", start_time.elapsed());
+            return;
+        }
+
+        let bvh = BVHNode::build(triangles);
+        
+        for (layer_idx, layer_strokes) in strokes.iter_mut().enumerate() {
+            for (stroke_idx, stroke) in layer_strokes.iter_mut().enumerate() {
+                current_stroke_idx += 1;
+                let msg = format!(
+                    "Reprojecting paint strokes ({}/{}) on new geometry...",
+                    current_stroke_idx,
+                    total_strokes
+                );
+                if let Ok(mut lock) = status.lock() {
+                    *lock = msg;
+                }
+                
+                let stroke_start = std::time::Instant::now();
+                stroke.uv_points.clear();
+                
+                for pt in &stroke.points {
+                    let mut closest_uv = glam::Vec2::ZERO;
+                    let mut min_dist_sq = f32::MAX;
+                    bvh.find_closest(*pt, &mut min_dist_sq, &mut closest_uv);
+                    stroke.uv_points.push(closest_uv);
+                }
+                
+                log::debug!(
+                    "  Stroke {} on Layer {} ({} points) reprojected in {:?}",
+                    stroke_idx,
+                    layer_idx,
+                    stroke.points.len(),
+                    stroke_start.elapsed()
+                );
+            }
+        }
+        
+        log::info!("Completed background reprojection of strokes in {:?}", start_time.elapsed());
     }
 
     pub fn redraw_all_layers(
@@ -1528,4 +1666,148 @@ pub fn create_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout 
         ],
         label: Some("Painter Texture Bind Group Layout"),
     })
+}
+
+struct WorldTriangle {
+    p0: glam::Vec3,
+    p1: glam::Vec3,
+    p2: glam::Vec3,
+    uv0: glam::Vec2,
+    uv1: glam::Vec2,
+    uv2: glam::Vec2,
+    center: glam::Vec3,
+    bounds_min: glam::Vec3,
+    bounds_max: glam::Vec3,
+}
+
+enum BVHNodeKind {
+    Internal {
+        left: Box<BVHNode>,
+        right: Box<BVHNode>,
+    },
+    Leaf {
+        triangles: Vec<WorldTriangle>,
+    },
+}
+
+struct BVHNode {
+    bounds_min: glam::Vec3,
+    bounds_max: glam::Vec3,
+    kind: BVHNodeKind,
+}
+
+impl BVHNode {
+    fn build(mut triangles: Vec<WorldTriangle>) -> Self {
+        let mut bounds_min = glam::Vec3::splat(f32::MAX);
+        let mut bounds_max = glam::Vec3::splat(f32::MIN);
+        for t in &triangles {
+            bounds_min = bounds_min.min(t.bounds_min);
+            bounds_max = bounds_max.max(t.bounds_max);
+        }
+
+        if triangles.len() <= 32 {
+            return BVHNode {
+                bounds_min,
+                bounds_max,
+                kind: BVHNodeKind::Leaf { triangles },
+            };
+        }
+
+        let spread = bounds_max - bounds_min;
+        let axis = if spread.x > spread.y && spread.x > spread.z {
+            0
+        } else if spread.y > spread.z {
+            1
+        } else {
+            2
+        };
+
+        let mid = triangles.len() / 2;
+        triangles.select_nth_unstable_by(mid, |a, b| {
+            let val_a = match axis {
+                0 => a.center.x,
+                1 => a.center.y,
+                _ => a.center.z,
+            };
+            let val_b = match axis {
+                0 => b.center.x,
+                1 => b.center.y,
+                _ => b.center.z,
+            };
+            val_a.partial_cmp(&val_b).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let right_triangles = triangles.split_off(mid);
+        let left_node = BVHNode::build(triangles);
+        let right_node = BVHNode::build(right_triangles);
+
+        BVHNode {
+            bounds_min,
+            bounds_max,
+            kind: BVHNodeKind::Internal {
+                left: Box::new(left_node),
+                right: Box::new(right_node),
+            },
+        }
+    }
+
+    fn find_closest(
+        &self,
+        pt: glam::Vec3,
+        min_dist_sq: &mut f32,
+        closest_uv: &mut glam::Vec2,
+    ) {
+        if *min_dist_sq < 1e-6 {
+            return;
+        }
+
+        let q = glam::Vec3::new(
+            pt.x.clamp(self.bounds_min.x, self.bounds_max.x),
+            pt.y.clamp(self.bounds_min.y, self.bounds_max.y),
+            pt.z.clamp(self.bounds_min.z, self.bounds_max.z),
+        );
+        let dist_sq = pt.distance_squared(q);
+        if dist_sq >= *min_dist_sq {
+            return;
+        }
+
+        match &self.kind {
+            BVHNodeKind::Internal { left, right } => {
+                let q_left = glam::Vec3::new(
+                    pt.x.clamp(left.bounds_min.x, left.bounds_max.x),
+                    pt.y.clamp(left.bounds_min.y, left.bounds_max.y),
+                    pt.z.clamp(left.bounds_min.z, left.bounds_max.z),
+                );
+                let dist_sq_left = pt.distance_squared(q_left);
+
+                let q_right = glam::Vec3::new(
+                    pt.x.clamp(right.bounds_min.x, right.bounds_max.x),
+                    pt.y.clamp(right.bounds_min.y, right.bounds_max.y),
+                    pt.z.clamp(right.bounds_min.z, right.bounds_max.z),
+                );
+                let dist_sq_right = pt.distance_squared(q_right);
+
+                if dist_sq_left < dist_sq_right {
+                    left.find_closest(pt, min_dist_sq, closest_uv);
+                    right.find_closest(pt, min_dist_sq, closest_uv);
+                } else {
+                    right.find_closest(pt, min_dist_sq, closest_uv);
+                    left.find_closest(pt, min_dist_sq, closest_uv);
+                }
+            }
+            BVHNodeKind::Leaf { triangles } => {
+                for t in triangles {
+                    let (closest_pt, bary) = closest_point_on_triangle(pt, t.p0, t.p1, t.p2);
+                    let d_sq = pt.distance_squared(closest_pt);
+                    if d_sq < *min_dist_sq {
+                        *min_dist_sq = d_sq;
+                        *closest_uv = t.uv0 * bary[0] + t.uv1 * bary[1] + t.uv2 * bary[2];
+                        if d_sq < 1e-6 {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

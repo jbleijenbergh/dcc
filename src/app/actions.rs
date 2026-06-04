@@ -129,14 +129,37 @@ impl State {
         self.is_loading_gltf = true;
         self.loading_path = Some(path.to_path_buf());
 
+        // Extract strokes from non-fill layers to clone and reproject in background
+        let mut strokes_to_reproject = Vec::new();
+        for layer in &self.painter.layers {
+            if !layer.is_fill {
+                strokes_to_reproject.push(layer.strokes.clone());
+            } else {
+                strokes_to_reproject.push(Vec::new());
+            }
+        }
+
+        let status = std::sync::Arc::new(std::sync::Mutex::new("Reading glTF file...".to_string()));
+        self.gltf_loading_status = Some(status.clone());
+
         let path = path.to_path_buf();
         let device = self.device.clone();
         let layout = self.viewport.node_bind_group_layout.clone();
         let window = self.window.clone();
 
         std::thread::spawn(move || {
+            if let Ok(mut lock) = status.lock() {
+                *lock = "Loading meshes and textures...".to_string();
+            }
             let res = crate::mesh::load_gltf(&device, &layout, &path)
-                .map(|doc| (doc, path.file_name().unwrap_or_default().to_string_lossy().to_string()));
+                .map(|doc| {
+                    let filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                    let mut reprojected_strokes = strokes_to_reproject;
+                    
+                    crate::painter::Painter::reproject_strokes_in_background(&mut reprojected_strokes, &doc, &status);
+                    
+                    (doc, filename, reprojected_strokes)
+                });
             let _ = tx.send(res);
             window.request_redraw();
         });

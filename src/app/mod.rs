@@ -55,7 +55,8 @@ pub struct State {
     last_hit_pos: Option<glam::Vec3>,
 
     // Async loading state
-    gltf_rx: Option<std::sync::mpsc::Receiver<Result<(crate::mesh::Document, String), String>>>,
+    gltf_rx: Option<std::sync::mpsc::Receiver<Result<(crate::mesh::Document, String, Vec<Vec<crate::painter::PaintStroke>>), String>>>,
+    gltf_loading_status: Option<Arc<std::sync::Mutex<String>>>,
     is_loading_gltf: bool,
 
     pub import_settings: crate::mesh::ImportSettings,
@@ -192,6 +193,7 @@ impl State {
             last_hit_uv: None,
             last_hit_pos: None,
             gltf_rx: None,
+            gltf_loading_status: None,
             is_loading_gltf: false,
             import_settings: crate::mesh::ImportSettings {
                 seams_option: crate::mesh::SeamsOption::GenerateMissing,
@@ -376,18 +378,26 @@ impl State {
             if let Ok(res) = rx.try_recv() {
                 self.is_loading_gltf = false;
                 self.gltf_rx = None;
+                self.gltf_loading_status = None;
                 let path = self.loading_path.take().unwrap_or_default();
                 match res {
-                    Ok((doc, filename)) => {
+                    Ok((doc, filename, reprojected_strokes)) => {
                         self.viewport.set_document(doc);
                         self.viewport.update_node_transforms(&self.queue);
                         self.current_mesh_type = filename;
                         self.focus_camera_on_model();
                         self.error_details = None;
                         self.error_time = None;
-                        self.painter.reproject_strokes(&self.viewport.document);
+                        
+                        // Assign background reprojected strokes back to layers
+                        for (layer_idx, strokes) in reprojected_strokes.into_iter().enumerate() {
+                            if layer_idx < self.painter.layers.len() && !self.painter.layers[layer_idx].is_fill {
+                                self.painter.layers[layer_idx].strokes = strokes;
+                            }
+                        }
+                        
                         self.painter.redraw_all_layers(&self.device, &self.queue, &self.viewport.document);
-                        log::info!("Successfully loaded glTF model — strokes reprojected");
+                        log::info!("Successfully loaded glTF model — strokes reprojected in background");
                     }
                     Err(e) => {
                         log::error!("Failed to load glTF model: {}", e);
@@ -401,7 +411,6 @@ impl State {
 
     #[allow(deprecated)]
     pub fn render(&mut self) -> Result<(), SurfaceError> {
-        let render_start = std::time::Instant::now();
         let egui_input = self.egui_state.take_egui_input(&*self.window);
         self.egui_ctx.begin_pass(egui_input);
 
@@ -1020,6 +1029,11 @@ impl State {
         }
 
         if self.is_loading_gltf {
+            let status_msg = self.gltf_loading_status.as_ref()
+                .and_then(|status| status.lock().ok())
+                .map(|g| g.clone())
+                .unwrap_or_else(|| "Reading and compiling model resources in the background".to_string());
+
             egui::Window::new("Loading Model")
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .collapsible(false)
@@ -1039,7 +1053,7 @@ impl State {
                             .color(egui::Color32::WHITE)
                             .strong());
                         ui.add_space(8.0);
-                        ui.label(egui::RichText::new("Reading and compiling model resources in the background")
+                        ui.label(egui::RichText::new(status_msg)
                             .size(12.0)
                             .color(egui::Color32::LIGHT_GRAY));
                     });
@@ -1122,7 +1136,6 @@ impl State {
             self.egui_renderer.free_texture(id);
         }
 
-        log::debug!("State::render() took {:?}", render_start.elapsed());
         Ok(())
     }
 }
