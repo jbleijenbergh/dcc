@@ -480,12 +480,15 @@ pub fn load_gltf(
 
     let active_scene_idx = doc.default_scene().map(|s| s.index()).unwrap_or(0);
 
-    Ok(Document {
+    let mut doc = Document {
         scenes,
         nodes,
         active_scene_idx,
         materials,
-    })
+        num_udim_tiles: 1,
+    };
+    doc.update_num_udim_tiles();
+    Ok(doc)
 }
 
 #[cfg(test)]

@@ -6,7 +6,7 @@ struct CameraUniform {
     ambient_strength: f32,
     view_transform: f32,
     exposure: f32,
-    padding: f32,
+    num_udim_tiles: f32,
 };
 
 @group(0) @binding(0)
@@ -160,7 +160,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     
     // Draw thick tile border line at integer boundaries of U
     let u_dist_to_int = abs(u - round(u));
-    if (u_dist_to_int < 0.015 && u > 0.01 && u < 3.99) {
+    if (u_dist_to_int < 0.015 && u > 0.01 && u < camera.num_udim_tiles - 0.01) {
         grid_mask = 0.5; // darken tile boundaries heavily
     }
 

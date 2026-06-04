@@ -62,7 +62,7 @@ struct CameraUniform {
     ambient_strength: f32,
     view_transform: f32, // 0.0 for Standard, 1.0 for AgX, 2.0 for ACES
     exposure: f32,
-    padding: f32,
+    num_udim_tiles: f32,
 }
 
 impl CameraUniform {
@@ -75,7 +75,7 @@ impl CameraUniform {
             ambient_strength: 0.25,
             view_transform: 0.0,
             exposure: 1.0,
-            padding: 0.0,
+            num_udim_tiles: 1.0,
         }
     }
 
@@ -87,6 +87,7 @@ impl CameraUniform {
         ambient_strength: f32,
         view_transform: ViewTransform,
         exposure: f32,
+        num_udim_tiles: u32,
     ) {
         self.view_proj = camera.build_view_projection_matrix().to_cols_array_2d();
         let eye = camera.get_eye();
@@ -105,6 +106,7 @@ impl CameraUniform {
             ViewTransform::ACES => 2.0,
         };
         self.exposure = exposure;
+        self.num_udim_tiles = num_udim_tiles as f32;
     }
 }
 
@@ -133,7 +135,7 @@ impl Viewport {
         // Setup camera and uniforms
         let camera = Camera::new(aspect);
         let mut camera_uniform = CameraUniform::new();
-        camera_uniform.update_view_proj(&camera, 0.0, 1.0, 0.25, ViewTransform::Standard, 1.0);
+        camera_uniform.update_view_proj(&camera, 0.0, 1.0, 0.25, ViewTransform::Standard, 1.0, 1);
 
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Camera Uniform Buffer"),
@@ -270,6 +272,7 @@ impl Viewport {
     }
 
     pub fn update_camera(&mut self, queue: &wgpu::Queue) {
+        let num_tiles = self.document.num_udim_tiles;
         self.camera_uniform.update_view_proj(
             &self.camera,
             self.light_angle,
@@ -277,6 +280,7 @@ impl Viewport {
             self.ambient_strength,
             self.view_transform,
             self.exposure,
+            num_tiles,
         );
         queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[self.camera_uniform]));
     }

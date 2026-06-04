@@ -157,9 +157,29 @@ pub struct Document {
     pub nodes: Vec<Node>,
     pub active_scene_idx: usize,
     pub materials: Vec<MaterialInfo>,
+    pub num_udim_tiles: u32,
 }
 
 impl Document {
+    pub fn update_num_udim_tiles(&mut self) {
+        let mut max_u: f32 = 0.0;
+        let nodes = self.get_active_nodes();
+        for (node, _) in &nodes {
+            if let Some(ref mesh) = node.mesh {
+                for primitive in &mesh.primitives {
+                    for vertex in &primitive.vertices {
+                        max_u = max_u.max(vertex.tex_coords[0]);
+                    }
+                }
+            }
+        }
+        self.num_udim_tiles = if max_u <= 0.0 {
+            1
+        } else {
+            (max_u.ceil() as u32).clamp(1, 4)
+        };
+    }
+
     pub fn recompute_uvs(&mut self, settings: &ImportSettings, device: &wgpu::Device) {
         for node in &mut self.nodes {
             if let Some(ref mut mesh) = node.mesh {
@@ -186,6 +206,7 @@ impl Document {
                 }
             }
         }
+        self.update_num_udim_tiles();
     }
 
     pub fn from_single_primitive(
@@ -232,12 +253,15 @@ impl Document {
             root_nodes: vec![0],
         };
 
-        Self {
+        let mut doc = Self {
             scenes: vec![scene],
             nodes: vec![node],
             active_scene_idx: 0,
             materials: vec![],
-        }
+            num_udim_tiles: 1,
+        };
+        doc.update_num_udim_tiles();
+        doc
     }
 
     pub fn get_active_nodes(&self) -> Vec<(&Node, glam::Mat4)> {
@@ -594,6 +618,7 @@ mod tests {
                 nodes: vec![],
                 active_scene_idx: 0,
                 materials: vec![],
+                num_udim_tiles: 1,
             };
             assert_eq!(doc.compute_bounds(), None);
         }
