@@ -206,6 +206,7 @@ impl State {
             error_details: None,
             error_time: None,
             loading_path: None,
+            supported_present_modes: surface_caps.present_modes,
         })
     }
 
