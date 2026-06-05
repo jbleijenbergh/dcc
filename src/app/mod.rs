@@ -243,7 +243,7 @@ impl State {
         ((p - min_start) / (max_at - min_start)).clamp(0.0, 1.0)
     }
 
-    fn binding_matches_key(&self, binding: &user_preferences::KeyBinding, key: KeyCode) -> bool {
+    pub(crate) fn binding_matches_key(&self, binding: &user_preferences::KeyBinding, key: KeyCode) -> bool {
         let Some(expected) = parse_key_code(&binding.key) else {
             return false;
         };
@@ -274,7 +274,7 @@ impl State {
         true
     }
 
-    fn binding_matches_mouse(&self, binding: &user_preferences::MouseBinding, button: winit::event::MouseButton) -> bool {
+    pub(crate) fn binding_matches_mouse(&self, binding: &user_preferences::MouseBinding, button: winit::event::MouseButton) -> bool {
         parse_mouse_button(&binding.button).map_or(false, |expected| expected == button)
     }
 

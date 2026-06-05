@@ -1,0 +1,80 @@
+pressure_curve_min_start = 0.05000000074505806
+pressure_curve_max_at = 0.8500000238418579
+
+[bindings.orbit_modifier]
+key = "Space"
+ctrl = false
+cmd = false
+alt = false
+shift = false
+primary_mod = false
+
+[bindings.pan_modifier]
+key = "AltLeft"
+ctrl = false
+cmd = false
+alt = false
+shift = false
+primary_mod = false
+
+[bindings.undo]
+key = "KeyZ"
+ctrl = false
+cmd = false
+alt = false
+shift = false
+primary_mod = true
+
+[bindings.redo]
+key = "KeyY"
+ctrl = false
+cmd = false
+alt = false
+shift = false
+primary_mod = true
+
+[bindings.clear_canvas]
+key = "KeyC"
+ctrl = false
+cmd = false
+alt = false
+shift = false
+primary_mod = false
+
+[bindings.brush_size_down]
+key = "BracketLeft"
+ctrl = false
+cmd = false
+alt = false
+shift = false
+primary_mod = false
+
+[bindings.brush_size_up]
+key = "BracketRight"
+ctrl = false
+cmd = false
+alt = false
+shift = false
+primary_mod = false
+
+[bindings.tool_brush]
+key = "KeyB"
+ctrl = false
+cmd = false
+alt = false
+shift = false
+primary_mod = false
+
+[bindings.tool_eraser]
+key = "KeyE"
+ctrl = false
+cmd = false
+alt = false
+shift = false
+primary_mod = false
+
+[bindings.paint_button]
+button = "Left"
+
+[bindings.pan_button]
+button = "Right"

@@ -1,7 +1,7 @@
 use std::sync::OnceLock;
 
-use super::input::{InputEvent, ModifiersSnapshot, PointerData};
-use super::message::{DocumentCommand, Message, ToolKind, UiAction};
+use super::input::{ModifiersSnapshot, PointerData};
+use super::message::{DocumentCommand, Message, ToolKind, UiAction, ViewportCommand, ToolCommand, InputStateCommand};
 use super::tool::ToolSystem;
 use super::super::rerender_fill_layer;
 use crate::app::types::Tool;
@@ -69,44 +69,6 @@ fn apply_tool_pointer_cancel(state: &mut State, pointer: &PointerData) {
     }
 }
 
-fn apply_key_action(state: &mut State, key: winit::keyboard::KeyCode, pressed: bool) -> bool {
-    if !pressed {
-        return false;
-    }
-
-    if state.binding_matches_key(&state.preferences.bindings.undo, key) {
-        state.undo();
-        return true;
-    }
-    if state.binding_matches_key(&state.preferences.bindings.redo, key) {
-        state.redo();
-        return true;
-    }
-    if state.binding_matches_key(&state.preferences.bindings.brush_size_down, key) {
-        state.app_state.canvas_mut().brush_size = (state.app_state.canvas().brush_size - 5.0).max(2.0);
-        return true;
-    }
-    if state.binding_matches_key(&state.preferences.bindings.brush_size_up, key) {
-        state.app_state.canvas_mut().brush_size = (state.app_state.canvas().brush_size + 5.0).min(300.0);
-        return true;
-    }
-    if state.binding_matches_key(&state.preferences.bindings.clear_canvas, key) {
-        state.push_undo_state();
-        state.painter.clear_all_layers(&state.device, &state.queue);
-        return true;
-    }
-    if state.binding_matches_key(&state.preferences.bindings.tool_brush, key) {
-        state.app_state.tool_mut().active_tool = Tool::Brush;
-        return true;
-    }
-    if state.binding_matches_key(&state.preferences.bindings.tool_eraser, key) {
-        state.app_state.tool_mut().active_tool = Tool::Eraser;
-        return true;
-    }
-
-    false
-}
-
 fn apply_modifiers_snapshot(state: &mut State, modifiers: ModifiersSnapshot) {
     state.app_state.input_mut().ctrl = modifiers.ctrl;
     state.app_state.input_mut().cmd = modifiers.cmd;
@@ -116,46 +78,19 @@ fn apply_modifiers_snapshot(state: &mut State, modifiers: ModifiersSnapshot) {
 
 pub fn dispatch(state: &mut State, message: Message) -> bool {
     match message {
-        Message::Input(input) => match input {
-            InputEvent::PointerDown(pointer) => {
-                update_mouse_position(state, &pointer);
-                apply_pointer_pressure(state, &pointer);
-
-                if state.binding_matches_mouse(
-                    &state.preferences.bindings.paint_button,
-                    winit::event::MouseButton::Left,
-                ) {
-                    state.app_state.input_mut().paint_button_down = true;
-                    if !state.app_state.input().orbit_modifier && !state.app_state.input().alt {
-                        apply_tool_pointer_down(state, &pointer);
-                    }
-                    return true;
+        Message::Viewport(viewport_cmd) => {
+            match viewport_cmd {
+                ViewportCommand::Orbit { dx, dy } => {
+                    state.viewport.camera.yaw -= (dx as f64 * 0.005) as f32;
+                    state.viewport.camera.pitch =
+                        (state.viewport.camera.pitch + (dy as f64 * 0.005) as f32).clamp(
+                            -std::f32::consts::FRAC_PI_2 + 0.05,
+                            std::f32::consts::FRAC_PI_2 - 0.05,
+                        );
+                    state.interaction.last_hit_uv = None;
+                    state.interaction.last_hit_pos = None;
                 }
-                false
-            }
-            InputEvent::PointerMove(pointer) => {
-                let dx = pointer.delta.x as f64;
-                let dy = pointer.delta.y as f64;
-                update_mouse_position(state, &pointer);
-                apply_pointer_pressure(state, &pointer);
-
-                if state.app_state.input().paint_button_down {
-                    if state.app_state.input().orbit_modifier || state.app_state.input().alt {
-                        state.viewport.camera.yaw -= (dx * 0.005) as f32;
-                        state.viewport.camera.pitch =
-                            (state.viewport.camera.pitch + (dy * 0.005) as f32).clamp(
-                                -std::f32::consts::FRAC_PI_2 + 0.05,
-                                std::f32::consts::FRAC_PI_2 - 0.05,
-                            );
-                        state.interaction.last_hit_uv = None;
-                        state.interaction.last_hit_pos = None;
-                    } else {
-                        apply_tool_pointer_move(state, &pointer);
-                    }
-                    return true;
-                }
-
-                if state.app_state.input().pan_button_down {
+                ViewportCommand::Pan { dx, dy } => {
                     let eye = state.viewport.camera.get_eye();
                     let forward = (state.viewport.camera.target - eye).normalize();
                     let right = forward.cross(glam::Vec3::Y).normalize();
@@ -163,79 +98,69 @@ pub fn dispatch(state: &mut State, message: Message) -> bool {
 
                     let speed = state.viewport.camera.distance * 0.0015;
                     state.viewport.camera.target +=
-                        right * (-dx as f32 * speed) + up * (dy as f32 * speed);
-                    return true;
+                        right * (-dx * speed) + up * (dy * speed);
                 }
-
-                false
-            }
-            InputEvent::PointerUp(pointer) => {
-                update_mouse_position(state, &pointer);
-                state.app_state.input_mut().paint_button_down = false;
-                state.interaction.last_hit_uv = None;
-                state.interaction.last_hit_pos = None;
-                state.app_state.input_mut().pen_pressure = 1.0;
-                if state.app_state.input().touchpad_pressure_stage <= 0 {
-                    state.app_state.input_mut().has_tablet_input = false;
+                ViewportCommand::Zoom { scroll } => {
+                    state.viewport.camera.distance =
+                        (state.viewport.camera.distance - scroll * 0.25).max(1.0).min(50.0);
                 }
-                apply_tool_pointer_up(state, &pointer);
-                true
             }
-            InputEvent::PointerCancel(pointer) => {
-                update_mouse_position(state, &pointer);
-                state.app_state.input_mut().paint_button_down = false;
-                state.interaction.last_hit_uv = None;
-                state.interaction.last_hit_pos = None;
-                apply_tool_pointer_cancel(state, &pointer);
-                true
-            }
-            InputEvent::PointerEnter(pointer) => {
-                update_mouse_position(state, &pointer);
-                true
-            }
-            InputEvent::PointerLeave(pointer) => {
-                update_mouse_position(state, &pointer);
-                true
-            }
-            InputEvent::Wheel { delta, .. } => {
-                let scroll = delta.y;
-                state.viewport.camera.distance =
-                    (state.viewport.camera.distance - scroll * 0.25).max(1.0).min(50.0);
-                true
-            }
-            InputEvent::KeyDown { key, .. } => {
-                update_modifier_state(state, key, true);
-
-                if state.binding_matches_key(&state.preferences.bindings.orbit_modifier, key) {
-                    state.app_state.input_mut().orbit_modifier = true;
-                    return true;
+            true
+        }
+        Message::Tool(tool_cmd) => {
+            match tool_cmd {
+                ToolCommand::PointerDown(pointer) => {
+                    apply_tool_pointer_down(state, &pointer);
                 }
-                if state.binding_matches_key(&state.preferences.bindings.pan_modifier, key) {
-                    state.app_state.input_mut().alt = true;
-                    return true;
+                ToolCommand::PointerMove(pointer) => {
+                    apply_tool_pointer_move(state, &pointer);
                 }
-
-                apply_key_action(state, key, true)
-            }
-            InputEvent::KeyUp { key, .. } => {
-                update_modifier_state(state, key, false);
-
-                if state.binding_matches_key(&state.preferences.bindings.orbit_modifier, key) {
-                    state.app_state.input_mut().orbit_modifier = false;
-                    return true;
+                ToolCommand::PointerUp(pointer) => {
+                    state.interaction.last_hit_uv = None;
+                    state.interaction.last_hit_pos = None;
+                    apply_tool_pointer_up(state, &pointer);
                 }
-                if state.binding_matches_key(&state.preferences.bindings.pan_modifier, key) {
-                    state.app_state.input_mut().alt = false;
-                    return true;
+                ToolCommand::PointerCancel(pointer) => {
+                    state.interaction.last_hit_uv = None;
+                    state.interaction.last_hit_pos = None;
+                    apply_tool_pointer_cancel(state, &pointer);
                 }
-
-                false
             }
-            InputEvent::ModifiersChanged(modifiers) => {
-                apply_modifiers_snapshot(state, modifiers);
-                true
+            true
+        }
+        Message::InputState(input_state_cmd) => {
+            match input_state_cmd {
+                InputStateCommand::UpdateModifier { key, is_pressed } => {
+                    update_modifier_state(state, key, is_pressed);
+                }
+                InputStateCommand::UpdateModifiersSnapshot(modifiers) => {
+                    apply_modifiers_snapshot(state, modifiers);
+                }
+                InputStateCommand::UpdateMousePosition(pointer) => {
+                    update_mouse_position(state, &pointer);
+                    apply_pointer_pressure(state, &pointer);
+                }
+                InputStateCommand::SetPaintButtonDown(down) => {
+                    state.app_state.input_mut().paint_button_down = down;
+                }
+                InputStateCommand::SetPanButtonDown(down) => {
+                    state.app_state.input_mut().pan_button_down = down;
+                }
+                InputStateCommand::SetOrbitModifier(active) => {
+                    state.app_state.input_mut().orbit_modifier = active;
+                }
+                InputStateCommand::SetAltModifier(active) => {
+                    state.app_state.input_mut().alt = active;
+                }
+                InputStateCommand::ResetPenPressure => {
+                    state.app_state.input_mut().pen_pressure = 1.0;
+                    if state.app_state.input().touchpad_pressure_stage <= 0 {
+                        state.app_state.input_mut().has_tablet_input = false;
+                    }
+                }
             }
-        },
+            true
+        }
         Message::Ui(action) => {
             match action {
                 UiAction::SelectTool(tool) => {

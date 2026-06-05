@@ -1,4 +1,4 @@
-use super::input::InputEvent;
+use super::input::{ModifiersSnapshot, PointerData};
 use crate::painter::BlendMode;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -55,9 +55,39 @@ pub enum DocumentCommand {
     ClearAllLayers,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum ViewportCommand {
+    Orbit { dx: f32, dy: f32 },
+    Pan { dx: f32, dy: f32 },
+    Zoom { scroll: f32 },
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum ToolCommand {
+    PointerDown(PointerData),
+    PointerMove(PointerData),
+    PointerUp(PointerData),
+    PointerCancel(PointerData),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum InputStateCommand {
+    UpdateModifier { key: winit::keyboard::KeyCode, is_pressed: bool },
+    UpdateModifiersSnapshot(ModifiersSnapshot),
+    UpdateMousePosition(PointerData),
+    SetPaintButtonDown(bool),
+    SetPanButtonDown(bool),
+    SetOrbitModifier(bool),
+    SetAltModifier(bool),
+    ResetPenPressure,
+}
+
 #[derive(Clone, Debug)]
 pub enum Message {
-    Input(InputEvent),
     Ui(UiAction),
     Document(DocumentCommand),
+    Viewport(ViewportCommand),
+    Tool(ToolCommand),
+    InputState(InputStateCommand),
 }
+
