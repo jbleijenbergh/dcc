@@ -249,6 +249,27 @@ pub fn dispatch(state: &mut State, message: Message) -> bool {
                 UiAction::SetBrushSize(size) => {
                     state.app_state.canvas.brush_size = size.clamp(2.0, 300.0);
                 }
+                UiAction::SetBrushHardness(hardness) => {
+                    state.app_state.canvas.brush_hardness = hardness.clamp(0.0, 1.0);
+                }
+                UiAction::SetBrushOpacity(opacity) => {
+                    state.app_state.canvas.brush_opacity = opacity.clamp(0.0, 1.0);
+                }
+                UiAction::SetBrushColor(color) => {
+                    state.app_state.canvas.brush_color = color;
+                }
+                UiAction::SetUvViewerVisible(visible) => {
+                    state.app_state.ui.show_uv_viewer = visible;
+                }
+                UiAction::SetUvViewerSource(source) => {
+                    state.app_state.ui.uv_viewer_source = source;
+                }
+                UiAction::SetUvViewerSize(size) => {
+                    state.app_state.ui.uv_viewer_size = size.clamp(64.0, 512.0);
+                }
+                UiAction::SetUvWireframe(show) => {
+                    state.app_state.ui.show_uv_wireframe = show;
+                }
                 UiAction::ClearCanvas => {
                     state.push_undo_state();
                     state.painter.clear_all_layers(&state.device, &state.queue);

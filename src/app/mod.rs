@@ -598,8 +598,6 @@ impl State {
         let layers_snapshot = self.painter.layers.clone();
         let active_idx_snapshot = self.painter.active_layer_idx;
         let mut undo_state_to_push: Option<architecture::state::UndoState> = None;
-        let mut undo_requested = false;
-        let mut redo_requested = false;
 
         let push_undo_snapshot = || {
             architecture::state::UndoState {
@@ -669,12 +667,17 @@ impl State {
         }
 
         let mut export_requested = false;
-        let mut clear_requested = false;
         let mut geometry_to_switch = None;
         let mut gltf_to_load = None;
         let mut recompute_uv_requested = false;
         let mut save_bindings_requested = false;
         let mut reset_bindings_requested = false;
+        let mut pending_ui_actions: Vec<architecture::message::UiAction> = Vec::new();
+        let mut pending_tool_selection: Option<architecture::message::ToolKind> = None;
+        let mut pending_brush_size: Option<f32> = None;
+        let mut pending_brush_hardness: Option<f32> = None;
+        let mut pending_brush_opacity: Option<f32> = None;
+        let mut pending_brush_color: Option<[u8; 4]> = None;
 
         egui::Panel::top("top_menu").show(&self.egui_ctx, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
@@ -690,7 +693,7 @@ impl State {
                     }
                     ui.separator();
                     if ui.button("Clear Canvas").clicked() {
-                        clear_requested = true;
+                        pending_ui_actions.push(architecture::message::UiAction::ClearCanvas);
                         ui.close();
                     }
                     if ui.button("Export Composed Texture (PNG)").clicked() {
@@ -707,28 +710,32 @@ impl State {
                     let undo_enabled = !self.app_state.history.undo_stack.is_empty();
                     let undo_label = if undo_enabled { "Undo (Ctrl+Z)" } else { "Undo" };
                     if ui.add_enabled(undo_enabled, egui::Button::new(undo_label)).clicked() {
-                        undo_requested = true;
+                        pending_ui_actions.push(architecture::message::UiAction::Undo);
                         ui.close();
                     }
                     
                     let redo_enabled = !self.app_state.history.redo_stack.is_empty();
                     let redo_label = if redo_enabled { "Redo (Ctrl+Y)" } else { "Redo" };
                     if ui.add_enabled(redo_enabled, egui::Button::new(redo_label)).clicked() {
-                        redo_requested = true;
+                        pending_ui_actions.push(architecture::message::UiAction::Redo);
                         ui.close();
                     }
                 });
 
                 ui.menu_button("Window", |ui| {
                     if ui.selectable_label(self.app_state.ui.show_uv_viewer, "UV Viewer").clicked() {
-                        self.app_state.ui.show_uv_viewer = !self.app_state.ui.show_uv_viewer;
+                        pending_ui_actions.push(architecture::message::UiAction::SetUvViewerVisible(
+                            !self.app_state.ui.show_uv_viewer,
+                        ));
                         ui.close();
                     }
                 });
 
                 ui.separator();
                 if ui.selectable_label(self.app_state.ui.show_uv_viewer, "🗺 View UVs").clicked() {
-                    self.app_state.ui.show_uv_viewer = !self.app_state.ui.show_uv_viewer;
+                    pending_ui_actions.push(architecture::message::UiAction::SetUvViewerVisible(
+                        !self.app_state.ui.show_uv_viewer,
+                    ));
                 }
 
                 ui.separator();
@@ -785,7 +792,7 @@ impl State {
                 format!("{} Brush", egui_phosphor::regular::PAINT_BRUSH),
             );
             if brush_btn.clicked() {
-                self.app_state.tool.active_tool = Tool::Brush;
+                pending_tool_selection = Some(architecture::message::ToolKind::Brush);
             }
 
             let eraser_btn = ui.selectable_label(
@@ -793,12 +800,12 @@ impl State {
                 format!("{} Eraser", egui_phosphor::regular::ERASER),
             );
             if eraser_btn.clicked() {
-                self.app_state.tool.active_tool = Tool::Eraser;
+                pending_tool_selection = Some(architecture::message::ToolKind::Eraser);
             }
 
             ui.separator();
             if ui.button("Clear All").clicked() {
-                clear_requested = true;
+                pending_ui_actions.push(architecture::message::UiAction::ClearCanvas);
             }
         });
 
@@ -812,17 +819,35 @@ impl State {
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label("Size:");
-                        ui.add(egui::Slider::new(&mut self.app_state.canvas.brush_size, 2.0..=300.0).text("px"));
+                        let mut brush_size = self.app_state.canvas.brush_size;
+                        if ui
+                            .add(egui::Slider::new(&mut brush_size, 2.0..=300.0).text("px"))
+                            .changed()
+                        {
+                            pending_brush_size = Some(brush_size);
+                        }
                     });
 
                     ui.horizontal(|ui| {
                         ui.label("Hardness:");
-                        ui.add(egui::Slider::new(&mut self.app_state.canvas.brush_hardness, 0.0..=1.0));
+                        let mut brush_hardness = self.app_state.canvas.brush_hardness;
+                        if ui
+                            .add(egui::Slider::new(&mut brush_hardness, 0.0..=1.0))
+                            .changed()
+                        {
+                            pending_brush_hardness = Some(brush_hardness);
+                        }
                     });
 
                     ui.horizontal(|ui| {
                         ui.label("Opacity:");
-                        ui.add(egui::Slider::new(&mut self.app_state.canvas.brush_opacity, 0.0..=1.0));
+                        let mut brush_opacity = self.app_state.canvas.brush_opacity;
+                        if ui
+                            .add(egui::Slider::new(&mut brush_opacity, 0.0..=1.0))
+                            .changed()
+                        {
+                            pending_brush_opacity = Some(brush_opacity);
+                        }
                     });
 
                     ui.separator();
@@ -841,12 +866,13 @@ impl State {
                     ];
                     
                     if ui.color_edit_button_rgba_unmultiplied(&mut color_f32).changed() {
-                        self.app_state.canvas.brush_color = [
+                        let brush_color = [
                             (color_f32[0] * 255.0) as u8,
                             (color_f32[1] * 255.0) as u8,
                             (color_f32[2] * 255.0) as u8,
                             (color_f32[3] * 255.0) as u8,
                         ];
+                        pending_brush_color = Some(brush_color);
                     }
                 });
 
@@ -1356,6 +1382,40 @@ impl State {
             });
         });
 
+        if let Some(tool) = pending_tool_selection {
+            architecture::reducer::dispatch(
+                self,
+                architecture::message::Message::Ui(architecture::message::UiAction::SelectTool(tool)),
+            );
+        }
+        if let Some(size) = pending_brush_size {
+            architecture::reducer::dispatch(
+                self,
+                architecture::message::Message::Ui(architecture::message::UiAction::SetBrushSize(size)),
+            );
+        }
+        if let Some(hardness) = pending_brush_hardness {
+            architecture::reducer::dispatch(
+                self,
+                architecture::message::Message::Ui(architecture::message::UiAction::SetBrushHardness(hardness)),
+            );
+        }
+        if let Some(opacity) = pending_brush_opacity {
+            architecture::reducer::dispatch(
+                self,
+                architecture::message::Message::Ui(architecture::message::UiAction::SetBrushOpacity(opacity)),
+            );
+        }
+        if let Some(color) = pending_brush_color {
+            architecture::reducer::dispatch(
+                self,
+                architecture::message::Message::Ui(architecture::message::UiAction::SetBrushColor(color)),
+            );
+        }
+        for action in pending_ui_actions {
+            architecture::reducer::dispatch(self, architecture::message::Message::Ui(action));
+        }
+
         if reset_bindings_requested {
             self.preferences.bindings = user_preferences::InputBindings::default();
             self.save_settings();
@@ -1444,19 +1504,6 @@ impl State {
             if self.app_state.history.undo_stack.len() > 50 {
                 self.app_state.history.undo_stack.remove(0);
             }
-        }
-
-        if undo_requested {
-            self.undo();
-        }
-
-        if redo_requested {
-            self.redo();
-        }
-
-        if clear_requested {
-            self.push_undo_state();
-            self.painter.clear_all_layers(&self.device, &self.queue);
         }
 
         if export_requested {
@@ -1591,24 +1638,27 @@ impl State {
     }
 
     pub fn render_uv_viewer(&mut self) -> Result<(), SurfaceError> {
-        let viewer = match &mut self.uv_viewer {
-            Some(v) => v,
-            None => return Ok(()),
-        };
-        
-        let egui_input = viewer.egui_state.take_egui_input(&*viewer.window);
-        viewer.egui_ctx.begin_pass(egui_input);
-        
-        let num_tiles = self.viewport.document.num_udim_tiles.max(1) as usize;
-        let show_uv_wireframe = self.app_state.ui.show_uv_wireframe;
-        let active_nodes = self.viewport.document.get_active_nodes();
-        
-        #[allow(deprecated)]
-        egui::CentralPanel::default().show(&viewer.egui_ctx, |ui| {
+        let mut pending_ui_actions: Vec<architecture::message::UiAction> = Vec::new();
+        {
+            let viewer = match &mut self.uv_viewer {
+                Some(v) => v,
+                None => return Ok(()),
+            };
+
+            let egui_input = viewer.egui_state.take_egui_input(&*viewer.window);
+            viewer.egui_ctx.begin_pass(egui_input);
+
+            let num_tiles = self.viewport.document.num_udim_tiles.max(1) as usize;
+            let show_uv_wireframe = self.app_state.ui.show_uv_wireframe;
+            let active_nodes = self.viewport.document.get_active_nodes();
+
+            #[allow(deprecated)]
+            egui::CentralPanel::default().show(&viewer.egui_ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label("Source:");
                 
                 let current_source = self.app_state.ui.uv_viewer_source;
+                let mut selected_source = current_source;
                 let source_name = if current_source == 0 {
                     "Composed Result".to_string()
                 } else {
@@ -1623,22 +1673,36 @@ impl State {
                 egui::ComboBox::from_id_salt("uv_viewer_source")
                     .selected_text(&source_name)
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.app_state.ui.uv_viewer_source, 0, "Composed Result");
+                        ui.selectable_value(&mut selected_source, 0, "Composed Result");
                         for idx in 0..self.painter.layers.len() {
                             ui.selectable_value(
-                                &mut self.app_state.ui.uv_viewer_source,
+                                &mut selected_source,
                                 idx + 1,
                                 format!("Layer: {}", self.painter.layers[idx].name),
                             );
                         }
                     });
+                if selected_source != current_source {
+                    pending_ui_actions.push(architecture::message::UiAction::SetUvViewerSource(
+                        selected_source,
+                    ));
+                }
                 
                 ui.add_space(15.0);
-                ui.checkbox(&mut self.app_state.ui.show_uv_wireframe, "Show UV Wireframe");
+                let mut wireframe = self.app_state.ui.show_uv_wireframe;
+                if ui.checkbox(&mut wireframe, "Show UV Wireframe").changed() {
+                    pending_ui_actions.push(architecture::message::UiAction::SetUvWireframe(wireframe));
+                }
                     
                 ui.add_space(20.0);
                 ui.label("Zoom:");
-                ui.add(egui::Slider::new(&mut self.app_state.ui.uv_viewer_size, 64.0..=512.0).suffix("px"));
+                let mut uv_size = self.app_state.ui.uv_viewer_size;
+                if ui
+                    .add(egui::Slider::new(&mut uv_size, 64.0..=512.0).suffix("px"))
+                    .changed()
+                {
+                    pending_ui_actions.push(architecture::message::UiAction::SetUvViewerSize(uv_size));
+                }
             });
             
             ui.separator();
@@ -1727,73 +1791,78 @@ impl State {
                     }
                 });
             });
-        });
-        
-        let egui_output = viewer.egui_ctx.end_pass();
-        let paint_jobs = viewer.egui_ctx.tessellate(egui_output.shapes, egui_output.pixels_per_point);
-        
-        for (id, image_delta) in &egui_output.textures_delta.set {
-            viewer.egui_renderer.update_texture(&self.device, &self.queue, *id, image_delta);
-        }
-        
-        let screen_descriptor = egui_wgpu::ScreenDescriptor {
-            size_in_pixels: [viewer.config.width, viewer.config.height],
-            pixels_per_point: viewer.window.scale_factor() as f32,
-        };
-        
-        let surface_texture = match viewer.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(t) => t,
-            wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
-            wgpu::CurrentSurfaceTexture::Timeout => return Err(SurfaceError::Timeout),
-            wgpu::CurrentSurfaceTexture::Outdated => return Err(SurfaceError::Outdated),
-            wgpu::CurrentSurfaceTexture::Lost => return Err(SurfaceError::Lost),
-            wgpu::CurrentSurfaceTexture::Occluded => return Err(SurfaceError::Timeout),
-            wgpu::CurrentSurfaceTexture::Validation => return Err(SurfaceError::Other("Validation error".into())),
-        };
-        let view = surface_texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("UV Viewer Render Encoder"),
-        });
-        
-        viewer.egui_renderer.update_buffers(
-            &self.device,
-            &self.queue,
-            &mut encoder,
-            &paint_jobs,
-            &screen_descriptor,
-        );
-        
-        {
-            let mut egui_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("UV Viewer Egui Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.15, g: 0.15, b: 0.15, a: 1.0 }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: None,
-                occlusion_query_set: None,
-                timestamp_writes: None,
-                multiview_mask: None,
-            }).forget_lifetime();
-            
-            viewer.egui_renderer.render(
-                &mut egui_pass,
+            });
+
+            let egui_output = viewer.egui_ctx.end_pass();
+            let paint_jobs = viewer.egui_ctx.tessellate(egui_output.shapes, egui_output.pixels_per_point);
+
+            for (id, image_delta) in &egui_output.textures_delta.set {
+                viewer.egui_renderer.update_texture(&self.device, &self.queue, *id, image_delta);
+            }
+
+            let screen_descriptor = egui_wgpu::ScreenDescriptor {
+                size_in_pixels: [viewer.config.width, viewer.config.height],
+                pixels_per_point: viewer.window.scale_factor() as f32,
+            };
+
+            let surface_texture = match viewer.surface.get_current_texture() {
+                wgpu::CurrentSurfaceTexture::Success(t) => t,
+                wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+                wgpu::CurrentSurfaceTexture::Timeout => return Err(SurfaceError::Timeout),
+                wgpu::CurrentSurfaceTexture::Outdated => return Err(SurfaceError::Outdated),
+                wgpu::CurrentSurfaceTexture::Lost => return Err(SurfaceError::Lost),
+                wgpu::CurrentSurfaceTexture::Occluded => return Err(SurfaceError::Timeout),
+                wgpu::CurrentSurfaceTexture::Validation => return Err(SurfaceError::Other("Validation error".into())),
+            };
+            let view = surface_texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("UV Viewer Render Encoder"),
+            });
+
+            viewer.egui_renderer.update_buffers(
+                &self.device,
+                &self.queue,
+                &mut encoder,
                 &paint_jobs,
                 &screen_descriptor,
             );
+
+            {
+                let mut egui_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("UV Viewer Egui Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.15, g: 0.15, b: 0.15, a: 1.0 }),
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    depth_stencil_attachment: None,
+                    occlusion_query_set: None,
+                    timestamp_writes: None,
+                    multiview_mask: None,
+                }).forget_lifetime();
+
+                viewer.egui_renderer.render(
+                    &mut egui_pass,
+                    &paint_jobs,
+                    &screen_descriptor,
+                );
+            }
+
+            self.queue.submit(std::iter::once(encoder.finish()));
+            surface_texture.present();
+
+            for id in &egui_output.textures_delta.free {
+                viewer.egui_renderer.free_texture(id);
+            }
         }
-        
-        self.queue.submit(std::iter::once(encoder.finish()));
-        surface_texture.present();
-        
-        for id in &egui_output.textures_delta.free {
-            viewer.egui_renderer.free_texture(id);
+
+        for action in pending_ui_actions {
+            architecture::reducer::dispatch(self, architecture::message::Message::Ui(action));
         }
         
         Ok(())
@@ -1807,6 +1876,13 @@ impl State {
                 viewer.surface.configure(&self.device, &viewer.config);
             }
         }
+    }
+
+    pub fn set_uv_viewer_visible(&mut self, visible: bool) {
+        architecture::reducer::dispatch(
+            self,
+            architecture::message::Message::Ui(architecture::message::UiAction::SetUvViewerVisible(visible)),
+        );
     }
 
     pub fn push_undo_state(&mut self) {
