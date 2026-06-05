@@ -8,7 +8,7 @@ impl State {
 
         let start_time = std::time::Instant::now();
 
-        let mouse_pos = glam::Vec2::new(self.last_mouse_pos.x as f32, self.last_mouse_pos.y as f32);
+        let mouse_pos = glam::Vec2::new(self.app_state.input.last_mouse_pos.x as f32, self.app_state.input.last_mouse_pos.y as f32);
         let screen_size = glam::Vec2::new(self.size.width as f32, self.size.height as f32);
 
         let eye = self.viewport.camera.get_eye();
@@ -22,14 +22,14 @@ impl State {
 
         let ray = crate::raycast::Ray::from_screen(mouse_pos, screen_size, view, proj);
 
-        let is_eraser = self.active_tool == Tool::Eraser;
+        let is_eraser = self.app_state.tool.active_tool == Tool::Eraser;
         
         // Apply tablet pressure to brush parameters
-        let pressure = if self.has_tablet_input { self.calibrated_pressure() } else { 1.0 };
-        let effective_size = self.brush_size * (0.2 + 0.8 * pressure); // Min 20% size at zero pressure
-        let effective_opacity = self.brush_opacity * pressure;
+        let pressure = if self.app_state.input.has_tablet_input { self.calibrated_pressure() } else { 1.0 };
+        let effective_size = self.app_state.canvas.brush_size * (0.2 + 0.8 * pressure); // Min 20% size at zero pressure
+        let effective_opacity = self.app_state.canvas.brush_opacity * pressure;
         
-        let mut brush_rgba = self.brush_color;
+        let mut brush_rgba = self.app_state.canvas.brush_color;
         brush_rgba[3] = (effective_opacity * 255.0) as u8;
 
         let raycast_start = std::time::Instant::now();
@@ -50,7 +50,7 @@ impl State {
                     point_alphas: Vec::new(),
                     color: brush_rgba,
                     radius: effective_size,
-                    hardness: self.brush_hardness,
+                    hardness: self.app_state.canvas.brush_hardness,
                     is_eraser: false,
                 });
             }
@@ -61,17 +61,17 @@ impl State {
                 stroke.point_alphas.push(brush_rgba[3]);
             }
 
-            if let Some(last_uv) = self.last_hit_uv {
+            if let Some(last_uv) = self.app_state.input.last_hit_uv {
                 self.painter.paint_stroke(
                     &self.device,
                     &self.queue,
                     last_uv,
                     hit.uv,
-                    self.last_hit_pos,
+                    self.app_state.input.last_hit_pos,
                     Some(hit.point),
                     brush_rgba,
                     effective_size,
-                    self.brush_hardness,
+                    self.app_state.canvas.brush_hardness,
                     is_eraser,
                     self.viewport.document.num_udim_tiles,
                 );
@@ -95,14 +95,14 @@ impl State {
                     Some(hit.point),
                     brush_rgba,
                     effective_size,
-                    self.brush_hardness,
+                    self.app_state.canvas.brush_hardness,
                     is_eraser,
                     self.viewport.document.num_udim_tiles,
                 );
             }
             let paint_duration = paint_start.elapsed();
-            self.last_hit_uv = Some(hit.uv);
-            self.last_hit_pos = Some(hit.point);
+            self.app_state.input.last_hit_uv = Some(hit.uv);
+            self.app_state.input.last_hit_pos = Some(hit.point);
 
             log::debug!(
                 "Paint stroke timing: raycast={:?}, paint={:?}, total={:?}",
@@ -112,8 +112,8 @@ impl State {
             );
             self.window.request_redraw();
         } else {
-            self.last_hit_uv = None;
-            self.last_hit_pos = None;
+            self.app_state.input.last_hit_uv = None;
+            self.app_state.input.last_hit_pos = None;
         }
     }
 

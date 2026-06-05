@@ -6,14 +6,28 @@ use winit::event::MouseButton;
 use winit::keyboard::KeyCode;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct AppSettings {
+pub struct UserPreferences {
     pub bindings: InputBindings,
+    #[serde(default = "default_pressure_curve_min_start")]
+    pub pressure_curve_min_start: f32,
+    #[serde(default = "default_pressure_curve_max_at")]
+    pub pressure_curve_max_at: f32,
 }
 
-impl Default for AppSettings {
+fn default_pressure_curve_min_start() -> f32 {
+    0.05
+}
+
+fn default_pressure_curve_max_at() -> f32 {
+    0.85
+}
+
+impl Default for UserPreferences {
     fn default() -> Self {
         Self {
             bindings: InputBindings::default(),
+            pressure_curve_min_start: 0.05,
+            pressure_curve_max_at: 0.85,
         }
     }
 }
@@ -98,7 +112,7 @@ impl Default for InputBindings {
     }
 }
 
-impl AppSettings {
+impl UserPreferences {
     pub fn default_path() -> PathBuf {
         let mut base = if let Some(home) = std::env::var_os("HOME") {
             PathBuf::from(home)

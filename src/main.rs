@@ -76,7 +76,7 @@ impl ApplicationHandler for App {
                     match event {
                         WindowEvent::CloseRequested => {
                             state.uv_viewer = None;
-                            state.show_uv_viewer = false;
+                            state.app_state.ui.show_uv_viewer = false;
                         }
                         WindowEvent::Resized(physical_size) => {
                             state.resize_uv_viewer(physical_size.width, physical_size.height);

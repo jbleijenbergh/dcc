@@ -1,7 +1,8 @@
 mod ui;
 mod actions;
 mod types;
-mod settings;
+mod user_preferences;
+mod architecture;
 
 pub use types::{Tool, SurfaceError, LoadError};
 
@@ -9,10 +10,10 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use winit::event::WindowEvent;
-use winit::keyboard::{KeyCode, PhysicalKey};
+use winit::keyboard::KeyCode;
 use winit::window::Window;
 use crate::painter::BlendMode;
-use settings::{AppSettings, KEY_CHOICES, MOUSE_BUTTON_CHOICES, parse_key_code, parse_mouse_button};
+use user_preferences::{UserPreferences, KEY_CHOICES, MOUSE_BUTTON_CHOICES, parse_key_code, parse_mouse_button};
 
 pub struct State {
     surface: wgpu::Surface<'static>,
@@ -28,19 +29,6 @@ pub struct State {
     depth_view: wgpu::TextureView,
     pub painter: crate::painter::Painter,
 
-    // Brush parameters
-    pub brush_size: f32,
-    pub brush_color: [u8; 4],
-    pub brush_hardness: f32,
-    pub brush_opacity: f32,
-    pub active_tool: Tool,
-
-    // Layer stack UI state
-    new_layer_name: String,
-
-    // Geometry selection
-    pub current_mesh_type: String,
-
     // Egui state
     egui_ctx: egui::Context,
     egui_state: egui_winit::State,
@@ -49,39 +37,7 @@ pub struct State {
     // WGPU instance, adapter & UV viewer window
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
-    pub show_uv_viewer: bool,
-    pub uv_viewer_source: usize,
-    pub uv_viewer_size: f32,
-    pub show_uv_wireframe: bool,
     pub uv_viewer: Option<UvViewerWindow>,
-
-    // Undo/Redo stacks and keyboard modifiers
-    undo_stack: Vec<UndoState>,
-    redo_stack: Vec<UndoState>,
-    is_ctrl_pressed: bool,
-    is_cmd_pressed: bool,
-    is_shift_pressed: bool,
-
-    // Camera movement/interaction mouse state
-    is_left_clicked: bool,
-    is_right_clicked: bool,
-    last_mouse_pos: winit::dpi::PhysicalPosition<f64>,
-
-    // Keyboard navigation modifiers
-    is_space_pressed: bool,
-    is_alt_pressed: bool,
-
-    // Stroke tracking
-    last_hit_uv: Option<glam::Vec2>,
-    last_hit_pos: Option<glam::Vec3>,
-
-    // Tablet input state
-    pen_pressure: f32,       // 0.0 to 1.0 (from touch force)
-    has_tablet_input: bool,  // Track if we're receiving tablet events
-    touchpad_pressure_stage: i64,
-    show_pressure_calibration: bool,
-    pressure_curve_min_start: f32,
-    pressure_curve_max_at: f32,
 
     // Async loading state
     gltf_rx: Option<std::sync::mpsc::Receiver<Result<(crate::mesh::Document, String, Vec<Vec<crate::painter::PaintStroke>>), String>>>,
@@ -95,9 +51,11 @@ pub struct State {
     loading_path: Option<std::path::PathBuf>,
     supported_present_modes: Vec<wgpu::PresentMode>,
 
-    settings: AppSettings,
-    settings_path: PathBuf,
+    preferences: UserPreferences,
+    preferences_path: PathBuf,
     settings_feedback: Option<String>,
+
+    pub app_state: architecture::state::AppState,
 }
 
 impl State {
@@ -199,7 +157,9 @@ impl State {
             },
         );
 
-        let (settings, settings_path) = AppSettings::load_or_default();
+        let (preferences, preferences_path) = UserPreferences::load_or_default();
+        let initial_layer_count = painter.layers.len();
+        let initial_num_udims = viewport.document.num_udim_tiles;
 
         let state = Self {
             window,
@@ -212,41 +172,12 @@ impl State {
             depth_texture,
             depth_view,
             painter,
-            brush_size: 25.0,
-            brush_color: [220, 50, 50, 255], // bright red default
-            brush_hardness: 0.5,
-            brush_opacity: 1.0,
-            active_tool: Tool::Brush,
-            new_layer_name: String::new(),
-            current_mesh_type: "Sphere".to_string(),
             egui_ctx,
             egui_state,
             egui_renderer,
             instance,
             adapter,
-            show_uv_viewer: false,
-            uv_viewer_source: 0,
-            uv_viewer_size: 256.0,
-            show_uv_wireframe: true,
             uv_viewer: None,
-            undo_stack: Vec::new(),
-            redo_stack: Vec::new(),
-            is_ctrl_pressed: false,
-            is_cmd_pressed: false,
-            is_shift_pressed: false,
-            is_left_clicked: false,
-            is_right_clicked: false,
-            last_mouse_pos: winit::dpi::PhysicalPosition::new(0.0, 0.0),
-            is_space_pressed: false,
-            is_alt_pressed: false,
-            last_hit_uv: None,
-            last_hit_pos: None,
-            pen_pressure: 1.0,
-            has_tablet_input: false,
-            touchpad_pressure_stage: 0,
-            show_pressure_calibration: false,
-            pressure_curve_min_start: 0.05,
-            pressure_curve_max_at: 0.85,
             gltf_rx: None,
             gltf_loading_status: None,
             is_loading_gltf: false,
@@ -261,13 +192,64 @@ impl State {
             loading_path: None,
             supported_present_modes: surface_caps.present_modes,
 
-            settings,
-            settings_path,
+            preferences,
+            preferences_path,
             settings_feedback: None,
+            app_state: architecture::state::AppState {
+                document: architecture::state::DocumentState {
+                    active_layer_idx: 0,
+                    layer_count: initial_layer_count,
+                    current_mesh: "Sphere".to_string(),
+                    num_udim_tiles: initial_num_udims,
+                    new_layer_name: String::new(),
+                },
+                canvas: architecture::state::CanvasState {
+                    brush_size: 25.0,
+                    brush_color: [220, 50, 50, 255],
+                    brush_hardness: 0.5,
+                    brush_opacity: 1.0,
+                },
+                tool: architecture::state::ToolState {
+                    active_tool: Tool::Brush,
+                },
+                ui: architecture::state::UiState {
+                    show_uv_viewer: false,
+                    uv_viewer_source: 0,
+                    uv_viewer_size: 256.0,
+                    show_uv_wireframe: true,
+                    show_pressure_calibration: false,
+                },
+                history: architecture::state::HistoryState {
+                    undo_len: 0,
+                    redo_len: 0,
+                    undo_stack: Vec::new(),
+                    redo_stack: Vec::new(),
+                },
+                resources: architecture::state::ResourceState {
+                    is_loading_gltf: false,
+                    has_error: false,
+                },
+                input: architecture::state::InputSnapshot {
+                    ctrl: false,
+                    cmd: false,
+                    shift: false,
+                    alt: false,
+                    orbit_modifier: false,
+                    pan_modifier: false,
+                    paint_button_down: false,
+                    pan_button_down: false,
+                    has_tablet_input: false,
+                    pen_pressure: 1.0,
+                    touchpad_pressure_stage: 0,
+                    last_mouse_pos: winit::dpi::PhysicalPosition::new(0.0, 0.0),
+                    last_hit_uv: None,
+                    last_hit_pos: None,
+                },
+            },
         };
 
-        if !state.settings_path.exists() {
-            if let Err(e) = state.settings.save_to(&state.settings_path) {
+        if !state.preferences_path.exists() {
+            if let Err(e) = state.preferences.save_to(&state.preferences_path) {
                 log::warn!("Failed to create default settings file: {}", e);
             }
         }
@@ -293,13 +275,13 @@ impl State {
     }
 
     pub fn calibrated_pressure(&self) -> f32 {
-        let p = self.pen_pressure.clamp(0.0, 1.0);
-        let min_start = self.pressure_curve_min_start.clamp(0.0, 1.0);
-        let max_at = self.pressure_curve_max_at.clamp(min_start + 0.001, 1.0);
+        let p = self.app_state.input.pen_pressure.clamp(0.0, 1.0);
+        let min_start = self.preferences.pressure_curve_min_start.clamp(0.0, 1.0);
+        let max_at = self.preferences.pressure_curve_max_at.clamp(min_start + 0.001, 1.0);
         ((p - min_start) / (max_at - min_start)).clamp(0.0, 1.0)
     }
 
-    fn binding_matches_key(&self, binding: &settings::KeyBinding, key: KeyCode) -> bool {
+    fn binding_matches_key(&self, binding: &user_preferences::KeyBinding, key: KeyCode) -> bool {
         let Some(expected) = parse_key_code(&binding.key) else {
             return false;
         };
@@ -309,295 +291,97 @@ impl State {
         }
 
         if binding.primary_mod {
-            if !(self.is_ctrl_pressed || self.is_cmd_pressed) {
+            if !(self.app_state.input.ctrl || self.app_state.input.cmd) {
                 return false;
             }
         }
 
-        if binding.ctrl && !self.is_ctrl_pressed {
+        if binding.ctrl && !self.app_state.input.ctrl {
             return false;
         }
-        if binding.cmd && !self.is_cmd_pressed {
+        if binding.cmd && !self.app_state.input.cmd {
             return false;
         }
-        if binding.alt && !self.is_alt_pressed {
+        if binding.alt && !self.app_state.input.alt {
             return false;
         }
-        if binding.shift && !self.is_shift_pressed {
+        if binding.shift && !self.app_state.input.shift {
             return false;
         }
 
         true
     }
 
-    fn binding_matches_mouse(&self, binding: &settings::MouseBinding, button: winit::event::MouseButton) -> bool {
+    fn binding_matches_mouse(&self, binding: &user_preferences::MouseBinding, button: winit::event::MouseButton) -> bool {
         parse_mouse_button(&binding.button).map_or(false, |expected| expected == button)
     }
 
     fn save_settings(&mut self) {
-        log::debug!("Saving bindings to {}", self.settings_path.display());
-        match self.settings.save_to(&self.settings_path) {
+        log::debug!("Saving bindings to {}", self.preferences_path.display());
+        match self.preferences.save_to(&self.preferences_path) {
             Ok(()) => {
-                let feedback = format!("Saved settings to {}", self.settings_path.display());
+                let feedback = format!("Saved settings to {}", self.preferences_path.display());
                 log::debug!("Bindings saved successfully: orbit_mod={}, pan_mod={}, undo={}, redo={}",
-                    self.settings.bindings.orbit_modifier.key,
-                    self.settings.bindings.pan_modifier.key,
-                    self.settings.bindings.undo.key,
-                    self.settings.bindings.redo.key);
+                    self.preferences.bindings.orbit_modifier.key,
+                    self.preferences.bindings.pan_modifier.key,
+                    self.preferences.bindings.undo.key,
+                    self.preferences.bindings.redo.key);
                 self.settings_feedback = Some(feedback);
             }
             Err(e) => {
                 self.settings_feedback = Some(format!("Failed to save settings: {}", e));
-                log::error!("Failed to save bindings to {}: {}", self.settings_path.display(), e);
+                log::error!("Failed to save bindings to {}: {}", self.preferences_path.display(), e);
             }
         }
     }
 
     pub fn input(&mut self, event: &WindowEvent) -> bool {
-        if let WindowEvent::MouseInput { state: winit::event::ElementState::Released, button, .. } = event {
-            if self.binding_matches_mouse(&self.settings.bindings.paint_button, *button) {
-                if let Some(stroke) = self.current_stroke.take() {
-                    let active = self.painter.active_layer_idx;
-                    if active < self.painter.layers.len() && !self.painter.layers[active].is_fill {
-                        self.push_undo_state();
-                        self.painter.layers[active].strokes.push(stroke);
-                        log::info!(
-                            "Committed stroke to layer {}, total strokes: {}",
-                            self.painter.layers[active].name,
-                            self.painter.layers[active].strokes.len()
-                        );
-                    }
-                }
-                self.last_hit_uv = None;
-                self.last_hit_pos = None;
-                self.is_left_clicked = false;
-                self.pen_pressure = 1.0;
-                if self.touchpad_pressure_stage <= 0 {
-                    self.has_tablet_input = false;
-                }
-            }
-        }
-
         let egui_resp = self.egui_state.on_window_event(&*self.window, event);
         if egui_resp.consumed {
             return true;
         }
-
-        if let WindowEvent::Touch(touch) = event {
-            use winit::event::TouchPhase;
-
-            self.has_tablet_input = true;
-            self.pen_pressure = match touch.force {
-                Some(winit::event::Force::Normalized(pressure)) => pressure as f32,
-                Some(winit::event::Force::Calibrated { force, max_possible_force, .. }) => {
-                    (force / max_possible_force) as f32
-                }
-                None => 1.0,
-            };
-            self.last_mouse_pos = touch.location;
-
-            match touch.phase {
-                TouchPhase::Started => {
-                    if !self.egui_ctx.egui_wants_pointer_input() {
-                        if !self.is_space_pressed && !self.is_alt_pressed {
-                            self.is_left_clicked = true;
-                            self.paint_at_cursor();
-                        }
-                    }
-                    return true;
-                }
-                TouchPhase::Ended | TouchPhase::Cancelled => {
-                    if let Some(stroke) = self.current_stroke.take() {
-                        let active = self.painter.active_layer_idx;
-                        if active < self.painter.layers.len() && !self.painter.layers[active].is_fill {
-                            self.push_undo_state();
-                            self.painter.layers[active].strokes.push(stroke);
-                            log::info!(
-                                "Committed touch stroke to layer {}, total strokes: {}",
-                                self.painter.layers[active].name,
-                                self.painter.layers[active].strokes.len()
-                            );
-                        }
-                    }
-                    self.last_hit_uv = None;
-                    self.last_hit_pos = None;
-                    self.is_left_clicked = false;
-                    self.pen_pressure = 1.0;
-                    if self.touchpad_pressure_stage <= 0 {
-                        self.has_tablet_input = false;
-                    }
-                    return true;
-                }
-                TouchPhase::Moved => {
-                    if self.is_left_clicked && !self.egui_ctx.egui_wants_pointer_input() {
-                        if !self.is_space_pressed && !self.is_alt_pressed {
-                            self.paint_at_cursor();
-                        }
-                    }
-                    return true;
-                }
-            }
+        let messages = architecture::input::normalize_window_event(self, event);
+        let mut consumed = false;
+        for message in messages {
+            consumed |= architecture::reducer::dispatch(self, message);
         }
 
-        if let WindowEvent::TouchpadPressure { pressure, stage, .. } = event {
-            self.touchpad_pressure_stage = *stage;
-            if *stage > 0 {
-                self.has_tablet_input = true;
-                self.pen_pressure = pressure.clamp(0.0, 1.0);
-            } else {
-                self.pen_pressure = 1.0;
-                if !self.is_left_clicked {
-                    self.has_tablet_input = false;
-                }
+        self.sync_app_state_snapshot();
+        consumed
+    }
+
+    pub(crate) fn commit_current_stroke(&mut self) {
+        if let Some(stroke) = self.current_stroke.take() {
+            let active = self.painter.active_layer_idx;
+            if active < self.painter.layers.len() && !self.painter.layers[active].is_fill {
+                self.push_undo_state();
+                self.painter.layers[active].strokes.push(stroke);
             }
         }
-
-        match event {
-            WindowEvent::KeyboardInput {
-                event: winit::event::KeyEvent { physical_key, state, .. },
-                ..
-            } => {
-                if self.egui_ctx.egui_wants_keyboard_input() {
-                    return false;
-                }
-
-                let pressed = *state == winit::event::ElementState::Pressed;
-                match physical_key {
-                    PhysicalKey::Code(code) => {
-                        match code {
-                            KeyCode::ControlLeft | KeyCode::ControlRight => self.is_ctrl_pressed = pressed,
-                            KeyCode::SuperLeft | KeyCode::SuperRight => self.is_cmd_pressed = pressed,
-                            KeyCode::ShiftLeft | KeyCode::ShiftRight => self.is_shift_pressed = pressed,
-                            KeyCode::AltLeft | KeyCode::AltRight => self.is_alt_pressed = pressed,
-                            _ => {}
-                        }
-
-                        if self.binding_matches_key(&self.settings.bindings.orbit_modifier, *code) {
-                            self.is_space_pressed = pressed;
-                            return true;
-                        }
-
-                        if self.binding_matches_key(&self.settings.bindings.pan_modifier, *code) {
-                            self.is_alt_pressed = pressed;
-                            return true;
-                        }
-
-                        if pressed {
-                            if self.binding_matches_key(&self.settings.bindings.undo, *code) {
-                                self.undo();
-                                return true;
-                            }
-                            if self.binding_matches_key(&self.settings.bindings.redo, *code) {
-                                self.redo();
-                                return true;
-                            }
-                            if self.binding_matches_key(&self.settings.bindings.brush_size_down, *code) {
-                                self.brush_size = (self.brush_size - 5.0).max(2.0);
-                                log::info!("Brush size: {}", self.brush_size);
-                                return true;
-                            }
-                            if self.binding_matches_key(&self.settings.bindings.brush_size_up, *code) {
-                                self.brush_size = (self.brush_size + 5.0).min(300.0);
-                                log::info!("Brush size: {}", self.brush_size);
-                                return true;
-                            }
-                            if self.binding_matches_key(&self.settings.bindings.clear_canvas, *code) {
-                                self.push_undo_state();
-                                self.painter.clear_all_layers(&self.device, &self.queue);
-                                log::info!("Cleared canvas");
-                                return true;
-                            }
-                            if self.binding_matches_key(&self.settings.bindings.tool_brush, *code) {
-                                self.active_tool = Tool::Brush;
-                                return true;
-                            }
-                            if self.binding_matches_key(&self.settings.bindings.tool_eraser, *code) {
-                                self.active_tool = Tool::Eraser;
-                                return true;
-                            }
-                        }
-
-                        false
-                    }
-                    _ => false,
-                }
-            }
-            WindowEvent::MouseInput { state, button, .. } => {
-                if self.egui_ctx.egui_wants_pointer_input() {
-                    return false;
-                }
-
-                let pressed = *state == winit::event::ElementState::Pressed;
-                if self.binding_matches_mouse(&self.settings.bindings.paint_button, *button) {
-                    self.is_left_clicked = pressed;
-                    if !pressed {
-                        self.last_hit_uv = None;
-                        self.last_hit_pos = None;
-                    } else if !self.is_space_pressed && !self.is_alt_pressed {
-                        self.paint_at_cursor();
-                    }
-                    true
-                } else if self.binding_matches_mouse(&self.settings.bindings.pan_button, *button) {
-                    self.is_right_clicked = pressed;
-                    true
-                } else {
-                    false
-                }
-            }
-            WindowEvent::CursorMoved { position, .. } => {
-                let dx = position.x - self.last_mouse_pos.x;
-                let dy = position.y - self.last_mouse_pos.y;
-                self.last_mouse_pos = *position;
-
-                if self.egui_ctx.egui_wants_pointer_input() {
-                    return false;
-                }
-
-                let is_navigating = self.is_space_pressed || self.is_alt_pressed;
-
-                if self.is_left_clicked {
-                    if is_navigating {
-                        self.viewport.camera.yaw -= (dx * 0.005) as f32;
-                        self.viewport.camera.pitch = (self.viewport.camera.pitch + (dy * 0.005) as f32)
-                            .clamp(-std::f32::consts::FRAC_PI_2 + 0.05, std::f32::consts::FRAC_PI_2 - 0.05);
-                        self.last_hit_uv = None;
-                        self.last_hit_pos = None;
-                    } else {
-                        self.paint_at_cursor();
-                    }
-                    return true;
-                }
-
-                if self.is_right_clicked {
-                    let eye = self.viewport.camera.get_eye();
-                    let forward = (self.viewport.camera.target - eye).normalize();
-                    let right = forward.cross(glam::Vec3::Y).normalize();
-                    let up = right.cross(forward).normalize();
-
-                    let speed = self.viewport.camera.distance * 0.0015;
-                    self.viewport.camera.target += right * (-dx as f32 * speed) + up * (dy as f32 * speed);
-                    return true;
-                }
-
-                false
-            }
-            WindowEvent::MouseWheel { delta, .. } => {
-                if self.egui_ctx.egui_wants_pointer_input() {
-                    return false;
-                }
-
-                let scroll = match delta {
-                    winit::event::MouseScrollDelta::LineDelta(_, y) => *y,
-                    winit::event::MouseScrollDelta::PixelDelta(pos) => pos.y as f32 * 0.05,
-                };
-                self.viewport.camera.distance = (self.viewport.camera.distance - scroll * 0.25).max(1.0).min(50.0);
-                true
-            }
-            _ => false,
+        self.app_state.input.last_hit_uv = None;
+        self.app_state.input.last_hit_pos = None;
+        self.app_state.input.paint_button_down = false;
+        self.app_state.input.pen_pressure = 1.0;
+        if self.app_state.input.touchpad_pressure_stage <= 0 {
+            self.app_state.input.has_tablet_input = false;
         }
     }
 
-    fn draw_key_binding_editor(ui: &mut egui::Ui, id: &str, binding: &mut settings::KeyBinding) {
+    fn sync_app_state_snapshot(&mut self) {
+        self.app_state.document.active_layer_idx = self.painter.active_layer_idx;
+        self.app_state.document.layer_count = self.painter.layers.len();
+        self.app_state.document.num_udim_tiles = self.viewport.document.num_udim_tiles;
+
+        self.app_state.history.undo_len = self.app_state.history.undo_stack.len();
+        self.app_state.history.redo_len = self.app_state.history.redo_stack.len();
+
+        self.app_state.resources.is_loading_gltf = self.is_loading_gltf;
+        self.app_state.resources.has_error = self.error_details.is_some();
+
+        self.app_state.input.pan_modifier = self.app_state.input.alt;
+    }
+
+    fn draw_key_binding_editor(ui: &mut egui::Ui, id: &str, binding: &mut user_preferences::KeyBinding) {
         ui.horizontal(|ui| {
             ui.label("Key");
             egui::ComboBox::from_id_salt(id)
@@ -617,7 +401,7 @@ impl State {
         });
     }
 
-    fn draw_mouse_binding_editor(ui: &mut egui::Ui, id: &str, binding: &mut settings::MouseBinding) {
+    fn draw_mouse_binding_editor(ui: &mut egui::Ui, id: &str, binding: &mut user_preferences::MouseBinding) {
         ui.horizontal(|ui| {
             ui.label("Button");
             egui::ComboBox::from_id_salt(id)
@@ -630,7 +414,7 @@ impl State {
         });
     }
 
-    fn key_binding_signature(binding: &settings::KeyBinding) -> String {
+    fn key_binding_signature(binding: &user_preferences::KeyBinding) -> String {
         let mut parts: Vec<&str> = Vec::new();
         if binding.primary_mod {
             parts.push("PrimaryMod");
@@ -651,7 +435,7 @@ impl State {
         parts.join("+")
     }
 
-    fn binding_conflicts(bindings: &settings::InputBindings) -> Vec<String> {
+    fn binding_conflicts(bindings: &user_preferences::InputBindings) -> Vec<String> {
         let key_bindings = [
             ("Orbit Modifier", &bindings.orbit_modifier),
             ("Pan Modifier", &bindings.pan_modifier),
@@ -706,7 +490,7 @@ impl State {
                     Ok((doc, filename, reprojected_strokes)) => {
                         self.viewport.set_document(doc);
                         self.viewport.update_node_transforms(&self.queue);
-                        self.current_mesh_type = filename;
+                        self.app_state.document.current_mesh = filename;
                         self.focus_camera_on_model();
                         self.error_details = None;
                         self.error_time = None;
@@ -731,7 +515,7 @@ impl State {
         }
 
         // Spawn/destroy the UV viewer window based on show_uv_viewer flag
-        if self.show_uv_viewer && self.uv_viewer.is_none() {
+        if self.app_state.ui.show_uv_viewer && self.uv_viewer.is_none() {
             let window = Arc::new(event_loop.create_window(
                 Window::default_attributes()
                     .with_title("UV Viewer")
@@ -805,7 +589,7 @@ impl State {
                 layer_tex_ids,
             });
             log::info!("Opened floatable UV Viewer window.");
-        } else if !self.show_uv_viewer && self.uv_viewer.is_some() {
+        } else if !self.app_state.ui.show_uv_viewer && self.uv_viewer.is_some() {
             self.uv_viewer = None;
             log::info!("Closed floatable UV Viewer window.");
         }
@@ -815,12 +599,12 @@ impl State {
     pub fn render(&mut self) -> Result<(), SurfaceError> {
         let layers_snapshot = self.painter.layers.clone();
         let active_idx_snapshot = self.painter.active_layer_idx;
-        let mut undo_state_to_push: Option<UndoState> = None;
+        let mut undo_state_to_push: Option<architecture::state::UndoState> = None;
         let mut undo_requested = false;
         let mut redo_requested = false;
 
         let push_undo_snapshot = || {
-            UndoState {
+            architecture::state::UndoState {
                 layers: layers_snapshot.clone(),
                 active_layer_idx: active_idx_snapshot,
             }
@@ -921,14 +705,14 @@ impl State {
                 });
 
                 ui.menu_button("Edit", |ui| {
-                    let undo_enabled = !self.undo_stack.is_empty();
+                    let undo_enabled = !self.app_state.history.undo_stack.is_empty();
                     let undo_label = if undo_enabled { "Undo (Ctrl+Z)" } else { "Undo" };
                     if ui.add_enabled(undo_enabled, egui::Button::new(undo_label)).clicked() {
                         undo_requested = true;
                         ui.close();
                     }
                     
-                    let redo_enabled = !self.redo_stack.is_empty();
+                    let redo_enabled = !self.app_state.history.redo_stack.is_empty();
                     let redo_label = if redo_enabled { "Redo (Ctrl+Y)" } else { "Redo" };
                     if ui.add_enabled(redo_enabled, egui::Button::new(redo_label)).clicked() {
                         redo_requested = true;
@@ -937,30 +721,30 @@ impl State {
                 });
 
                 ui.menu_button("Window", |ui| {
-                    if ui.selectable_label(self.show_uv_viewer, "UV Viewer").clicked() {
-                        self.show_uv_viewer = !self.show_uv_viewer;
+                    if ui.selectable_label(self.app_state.ui.show_uv_viewer, "UV Viewer").clicked() {
+                        self.app_state.ui.show_uv_viewer = !self.app_state.ui.show_uv_viewer;
                         ui.close();
                     }
                 });
 
                 ui.separator();
-                if ui.selectable_label(self.show_uv_viewer, "🗺 View UVs").clicked() {
-                    self.show_uv_viewer = !self.show_uv_viewer;
+                if ui.selectable_label(self.app_state.ui.show_uv_viewer, "🗺 View UVs").clicked() {
+                    self.app_state.ui.show_uv_viewer = !self.app_state.ui.show_uv_viewer;
                 }
 
                 ui.separator();
                 ui.label("Model:");
-                let current_mesh = self.current_mesh_type.clone();
+                let current_mesh = self.app_state.document.current_mesh.clone();
                 egui::ComboBox::from_id_salt("mesh_select")
                     .selected_text(&current_mesh)
                     .show_ui(ui, |ui| {
-                        if ui.selectable_value(&mut self.current_mesh_type, "Sphere".to_string(), "Sphere").changed() {
+                        if ui.selectable_value(&mut self.app_state.document.current_mesh, "Sphere".to_string(), "Sphere").changed() {
                             geometry_to_switch = Some("Sphere");
                         }
-                        if ui.selectable_value(&mut self.current_mesh_type, "Cube".to_string(), "Cube").changed() {
+                        if ui.selectable_value(&mut self.app_state.document.current_mesh, "Cube".to_string(), "Cube").changed() {
                             geometry_to_switch = Some("Cube");
                         }
-                        if ui.selectable_value(&mut self.current_mesh_type, "Plane".to_string(), "Plane").changed() {
+                        if ui.selectable_value(&mut self.app_state.document.current_mesh, "Plane".to_string(), "Plane").changed() {
                             geometry_to_switch = Some("Plane");
                         }
                     });
@@ -998,19 +782,19 @@ impl State {
             ui.separator();
 
             let brush_btn = ui.selectable_label(
-                self.active_tool == Tool::Brush,
+                self.app_state.tool.active_tool == Tool::Brush,
                 format!("{} Brush", egui_phosphor::regular::PAINT_BRUSH),
             );
             if brush_btn.clicked() {
-                self.active_tool = Tool::Brush;
+                self.app_state.tool.active_tool = Tool::Brush;
             }
 
             let eraser_btn = ui.selectable_label(
-                self.active_tool == Tool::Eraser,
+                self.app_state.tool.active_tool == Tool::Eraser,
                 format!("{} Eraser", egui_phosphor::regular::ERASER),
             );
             if eraser_btn.clicked() {
-                self.active_tool = Tool::Eraser;
+                self.app_state.tool.active_tool = Tool::Eraser;
             }
 
             ui.separator();
@@ -1029,36 +813,36 @@ impl State {
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label("Size:");
-                        ui.add(egui::Slider::new(&mut self.brush_size, 2.0..=300.0).text("px"));
+                        ui.add(egui::Slider::new(&mut self.app_state.canvas.brush_size, 2.0..=300.0).text("px"));
                     });
 
                     ui.horizontal(|ui| {
                         ui.label("Hardness:");
-                        ui.add(egui::Slider::new(&mut self.brush_hardness, 0.0..=1.0));
+                        ui.add(egui::Slider::new(&mut self.app_state.canvas.brush_hardness, 0.0..=1.0));
                     });
 
                     ui.horizontal(|ui| {
                         ui.label("Opacity:");
-                        ui.add(egui::Slider::new(&mut self.brush_opacity, 0.0..=1.0));
+                        ui.add(egui::Slider::new(&mut self.app_state.canvas.brush_opacity, 0.0..=1.0));
                     });
 
                     ui.separator();
                     if ui.button("Calibrate Pressure…").clicked() {
-                        self.show_pressure_calibration = true;
+                        self.app_state.ui.show_pressure_calibration = true;
                     }
 
                     ui.separator();
                     ui.label("Color:");
                     
                     let mut color_f32 = [
-                        self.brush_color[0] as f32 / 255.0,
-                        self.brush_color[1] as f32 / 255.0,
-                        self.brush_color[2] as f32 / 255.0,
-                        self.brush_color[3] as f32 / 255.0,
+                        self.app_state.canvas.brush_color[0] as f32 / 255.0,
+                        self.app_state.canvas.brush_color[1] as f32 / 255.0,
+                        self.app_state.canvas.brush_color[2] as f32 / 255.0,
+                        self.app_state.canvas.brush_color[3] as f32 / 255.0,
                     ];
                     
                     if ui.color_edit_button_rgba_unmultiplied(&mut color_f32).changed() {
-                        self.brush_color = [
+                        self.app_state.canvas.brush_color = [
                             (color_f32[0] * 255.0) as u8,
                             (color_f32[1] * 255.0) as u8,
                             (color_f32[2] * 255.0) as u8,
@@ -1072,11 +856,11 @@ impl State {
                 .default_open(true)
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.text_edit_singleline(&mut self.new_layer_name);
-                        if ui.button("Add").clicked() && !self.new_layer_name.trim().is_empty() {
+                        ui.text_edit_singleline(&mut self.app_state.document.new_layer_name);
+                        if ui.button("Add").clicked() && !self.app_state.document.new_layer_name.trim().is_empty() {
                             undo_state_to_push = Some(push_undo_snapshot());
-                            self.painter.add_paint_layer(self.new_layer_name.trim().to_string(), &self.device, &self.queue);
-                            self.new_layer_name.clear();
+                            self.painter.add_paint_layer(self.app_state.document.new_layer_name.trim().to_string(), &self.device, &self.queue);
+                            self.app_state.document.new_layer_name.clear();
                         }
                     });
 
@@ -1491,62 +1275,61 @@ impl State {
                 .default_open(false)
                 .show(ui, |ui| {
                     ui.label("Customize keys and mouse buttons for actions.");
-                    ui.small(format!("Settings file: {}", self.settings_path.display()));
-
+            ui.small(format!("Settings file: {}", self.preferences_path.display()));
                     ui.separator();
                     ui.label(egui::RichText::new("Navigation").strong());
                     ui.group(|ui| {
                         ui.label("Orbit Modifier");
-                        Self::draw_key_binding_editor(ui, "bind_orbit", &mut self.settings.bindings.orbit_modifier);
+                        Self::draw_key_binding_editor(ui, "bind_orbit", &mut self.preferences.bindings.orbit_modifier);
                     });
                     ui.group(|ui| {
                         ui.label("Pan Modifier");
-                        Self::draw_key_binding_editor(ui, "bind_pan_mod", &mut self.settings.bindings.pan_modifier);
+                        Self::draw_key_binding_editor(ui, "bind_pan_mod", &mut self.preferences.bindings.pan_modifier);
                     });
 
                     ui.separator();
                     ui.label(egui::RichText::new("Edit Actions").strong());
                     ui.group(|ui| {
                         ui.label("Undo");
-                        Self::draw_key_binding_editor(ui, "bind_undo", &mut self.settings.bindings.undo);
+                        Self::draw_key_binding_editor(ui, "bind_undo", &mut self.preferences.bindings.undo);
                     });
                     ui.group(|ui| {
                         ui.label("Redo");
-                        Self::draw_key_binding_editor(ui, "bind_redo", &mut self.settings.bindings.redo);
+                        Self::draw_key_binding_editor(ui, "bind_redo", &mut self.preferences.bindings.redo);
                     });
                     ui.group(|ui| {
                         ui.label("Clear Canvas");
-                        Self::draw_key_binding_editor(ui, "bind_clear", &mut self.settings.bindings.clear_canvas);
+                        Self::draw_key_binding_editor(ui, "bind_clear", &mut self.preferences.bindings.clear_canvas);
                     });
 
                     ui.separator();
                     ui.label(egui::RichText::new("Brush").strong());
                     ui.group(|ui| {
                         ui.label("Brush Size Down");
-                        Self::draw_key_binding_editor(ui, "bind_size_down", &mut self.settings.bindings.brush_size_down);
+                        Self::draw_key_binding_editor(ui, "bind_size_down", &mut self.preferences.bindings.brush_size_down);
                     });
                     ui.group(|ui| {
                         ui.label("Brush Size Up");
-                        Self::draw_key_binding_editor(ui, "bind_size_up", &mut self.settings.bindings.brush_size_up);
+                        Self::draw_key_binding_editor(ui, "bind_size_up", &mut self.preferences.bindings.brush_size_up);
                     });
                     ui.group(|ui| {
                         ui.label("Select Brush Tool");
-                        Self::draw_key_binding_editor(ui, "bind_tool_brush", &mut self.settings.bindings.tool_brush);
+                        Self::draw_key_binding_editor(ui, "bind_tool_brush", &mut self.preferences.bindings.tool_brush);
                     });
                     ui.group(|ui| {
                         ui.label("Select Eraser Tool");
-                        Self::draw_key_binding_editor(ui, "bind_tool_eraser", &mut self.settings.bindings.tool_eraser);
+                        Self::draw_key_binding_editor(ui, "bind_tool_eraser", &mut self.preferences.bindings.tool_eraser);
                     });
 
                     ui.separator();
                     ui.label(egui::RichText::new("Mouse Buttons").strong());
                     ui.group(|ui| {
                         ui.label("Paint Button");
-                        Self::draw_mouse_binding_editor(ui, "bind_paint_btn", &mut self.settings.bindings.paint_button);
+                        Self::draw_mouse_binding_editor(ui, "bind_paint_btn", &mut self.preferences.bindings.paint_button);
                     });
                     ui.group(|ui| {
                         ui.label("Pan Button");
-                        Self::draw_mouse_binding_editor(ui, "bind_pan_btn", &mut self.settings.bindings.pan_button);
+                        Self::draw_mouse_binding_editor(ui, "bind_pan_btn", &mut self.preferences.bindings.pan_button);
                     });
 
                     ui.horizontal(|ui| {
@@ -1558,7 +1341,7 @@ impl State {
                         }
                     });
 
-                    let conflicts = Self::binding_conflicts(&self.settings.bindings);
+                    let conflicts = Self::binding_conflicts(&self.preferences.bindings);
                     if !conflicts.is_empty() {
                         ui.add_space(6.0);
                         ui.colored_label(egui::Color32::from_rgb(255, 180, 80), "Binding conflicts detected:");
@@ -1575,14 +1358,14 @@ impl State {
         });
 
         if reset_bindings_requested {
-            self.settings.bindings = settings::InputBindings::default();
+            self.preferences.bindings = user_preferences::InputBindings::default();
             self.save_settings();
         } else if save_bindings_requested {
             self.save_settings();
         }
 
-        if self.show_pressure_calibration {
-            let mut is_open = self.show_pressure_calibration;
+        if self.app_state.ui.show_pressure_calibration {
+            let mut is_open = self.app_state.ui.show_pressure_calibration;
             let egui_ctx = self.egui_ctx.clone();
             egui::Window::new("Pressure Calibration")
                 .collapsible(false)
@@ -1593,8 +1376,8 @@ impl State {
                     ui.label("Adjust pressure response curve");
                     ui.add_space(4.0);
 
-                    let mut min_start = self.pressure_curve_min_start;
-                    let mut max_at = self.pressure_curve_max_at;
+                    let mut min_start = self.preferences.pressure_curve_min_start;
+                    let mut max_at = self.preferences.pressure_curve_max_at;
 
                     ui.horizontal(|ui| {
                         ui.label("Min start");
@@ -1606,24 +1389,24 @@ impl State {
                     });
 
                     if min_start >= max_at {
-                        if min_start == self.pressure_curve_min_start {
+                        if min_start == self.preferences.pressure_curve_min_start {
                             max_at = (min_start + 0.001).min(1.0);
                         } else {
                             min_start = (max_at - 0.001).max(0.0);
                         }
                     }
-                    self.pressure_curve_min_start = min_start;
-                    self.pressure_curve_max_at = max_at;
+                    self.preferences.pressure_curve_min_start = min_start;
+                    self.preferences.pressure_curve_max_at = max_at;
 
                     let calibrated = self.calibrated_pressure();
                     ui.separator();
                     ui.label(format!(
                         "Current pressure: {:.3} (mapped: {:.3})",
-                        self.pen_pressure,
+                        self.app_state.input.pen_pressure,
                         calibrated
                     ));
-                    if self.touchpad_pressure_stage > 0 {
-                        ui.label(format!("Force click stage: {}", self.touchpad_pressure_stage));
+                    if self.app_state.input.touchpad_pressure_stage > 0 {
+                        ui.label(format!("Force click stage: {}", self.app_state.input.touchpad_pressure_stage));
                     }
 
                     let graph_size = egui::vec2(320.0, 140.0);
@@ -1644,23 +1427,23 @@ impl State {
                     let line_color = egui::Color32::from_rgb(120, 200, 255);
                     let curve = vec![
                         to_screen(0.0, 0.0),
-                        to_screen(self.pressure_curve_min_start, 0.0),
-                        to_screen(self.pressure_curve_max_at, 1.0),
+                        to_screen(self.preferences.pressure_curve_min_start, 0.0),
+                        to_screen(self.preferences.pressure_curve_max_at, 1.0),
                         to_screen(1.0, 1.0),
                     ];
                     painter.add(egui::Shape::line(curve, egui::Stroke::new(2.0, line_color)));
 
-                    let marker = to_screen(self.pen_pressure, calibrated);
+                    let marker = to_screen(self.app_state.input.pen_pressure, calibrated);
                     painter.circle_filled(marker, 4.0, egui::Color32::YELLOW);
                 });
-            self.show_pressure_calibration = is_open;
+            self.app_state.ui.show_pressure_calibration = is_open;
         }
 
         if let Some(undo_state) = undo_state_to_push {
-            self.redo_stack.clear();
-            self.undo_stack.push(undo_state);
-            if self.undo_stack.len() > 50 {
-                self.undo_stack.remove(0);
+            self.app_state.history.redo_stack.clear();
+            self.app_state.history.undo_stack.push(undo_state);
+            if self.app_state.history.undo_stack.len() > 50 {
+                self.app_state.history.undo_stack.remove(0);
             }
         }
 
@@ -1818,7 +1601,7 @@ impl State {
         viewer.egui_ctx.begin_pass(egui_input);
         
         let num_tiles = self.viewport.document.num_udim_tiles.max(1) as usize;
-        let show_uv_wireframe = self.show_uv_wireframe;
+        let show_uv_wireframe = self.app_state.ui.show_uv_wireframe;
         let active_nodes = self.viewport.document.get_active_nodes();
         
         #[allow(deprecated)]
@@ -1826,7 +1609,7 @@ impl State {
             ui.horizontal(|ui| {
                 ui.label("Source:");
                 
-                let current_source = self.uv_viewer_source;
+                let current_source = self.app_state.ui.uv_viewer_source;
                 let source_name = if current_source == 0 {
                     "Composed Result".to_string()
                 } else {
@@ -1841,10 +1624,10 @@ impl State {
                 egui::ComboBox::from_id_salt("uv_viewer_source")
                     .selected_text(&source_name)
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.uv_viewer_source, 0, "Composed Result");
+                        ui.selectable_value(&mut self.app_state.ui.uv_viewer_source, 0, "Composed Result");
                         for idx in 0..self.painter.layers.len() {
                             ui.selectable_value(
-                                &mut self.uv_viewer_source,
+                                &mut self.app_state.ui.uv_viewer_source,
                                 idx + 1,
                                 format!("Layer: {}", self.painter.layers[idx].name),
                             );
@@ -1852,11 +1635,11 @@ impl State {
                     });
                 
                 ui.add_space(15.0);
-                ui.checkbox(&mut self.show_uv_wireframe, "Show UV Wireframe");
+                ui.checkbox(&mut self.app_state.ui.show_uv_wireframe, "Show UV Wireframe");
                     
                 ui.add_space(20.0);
                 ui.label("Zoom:");
-                ui.add(egui::Slider::new(&mut self.uv_viewer_size, 64.0..=512.0).suffix("px"));
+                ui.add(egui::Slider::new(&mut self.app_state.ui.uv_viewer_size, 64.0..=512.0).suffix("px"));
             });
             
             ui.separator();
@@ -1867,14 +1650,14 @@ impl State {
                         ui.vertical(|ui| {
                             ui.label(egui::RichText::new(format!("UDIM Tile {} (U: {}..{})", tile_idx, tile_idx, tile_idx + 1)).strong());
                             
-                            let tex_id = if self.uv_viewer_source == 0 {
+                            let tex_id = if self.app_state.ui.uv_viewer_source == 0 {
                                 if tile_idx < viewer.composite_tex_ids.len() {
                                     Some(viewer.composite_tex_ids[tile_idx])
                                 } else {
                                     None
                                 }
                             } else {
-                                let layer_idx = self.uv_viewer_source - 1;
+                                let layer_idx = self.app_state.ui.uv_viewer_source - 1;
                                 let global_view_idx = layer_idx * crate::painter::MAX_UDIMS + tile_idx;
                                 if global_view_idx < viewer.layer_tex_ids.len() {
                                     Some(viewer.layer_tex_ids[global_view_idx])
@@ -1884,7 +1667,7 @@ impl State {
                             };
                             
                             if let Some(id) = tex_id {
-                                let img_size = self.uv_viewer_size;
+                                let img_size = self.app_state.ui.uv_viewer_size;
                                 let response = ui.image((id, egui::vec2(img_size, img_size)));
                                 let rect = response.rect;
                                 
@@ -2029,50 +1812,50 @@ impl State {
 
     pub fn push_undo_state(&mut self) {
         // Clear redo stack when a new action is performed
-        self.redo_stack.clear();
+        self.app_state.history.redo_stack.clear();
         
-        let undo_state = UndoState {
+        let undo_state = architecture::state::UndoState {
             layers: self.painter.layers.clone(),
             active_layer_idx: self.painter.active_layer_idx,
         };
-        self.undo_stack.push(undo_state);
+        self.app_state.history.undo_stack.push(undo_state);
         
-        if self.undo_stack.len() > 50 {
-            self.undo_stack.remove(0);
+        if self.app_state.history.undo_stack.len() > 50 {
+            self.app_state.history.undo_stack.remove(0);
         }
     }
 
     pub fn undo(&mut self) {
-        if let Some(prev_state) = self.undo_stack.pop() {
-            let current_state = UndoState {
+        if let Some(prev_state) = self.app_state.history.undo_stack.pop() {
+            let current_state = architecture::state::UndoState {
                 layers: self.painter.layers.clone(),
                 active_layer_idx: self.painter.active_layer_idx,
             };
-            self.redo_stack.push(current_state);
+            self.app_state.history.redo_stack.push(current_state);
             
             self.painter.layers = prev_state.layers;
             self.painter.active_layer_idx = prev_state.active_layer_idx;
             
             self.painter.redraw_all_layers(&self.device, &self.queue, &self.viewport.document);
-            log::info!("Performed Undo. Undo stack size: {}, Redo stack size: {}", self.undo_stack.len(), self.redo_stack.len());
+            log::info!("Performed Undo. Undo stack size: {}, Redo stack size: {}", self.app_state.history.undo_stack.len(), self.app_state.history.redo_stack.len());
         } else {
             log::info!("Nothing to undo");
         }
     }
 
     pub fn redo(&mut self) {
-        if let Some(next_state) = self.redo_stack.pop() {
-            let current_state = UndoState {
+        if let Some(next_state) = self.app_state.history.redo_stack.pop() {
+            let current_state = architecture::state::UndoState {
                 layers: self.painter.layers.clone(),
                 active_layer_idx: self.painter.active_layer_idx,
             };
-            self.undo_stack.push(current_state);
+            self.app_state.history.undo_stack.push(current_state);
             
             self.painter.layers = next_state.layers;
             self.painter.active_layer_idx = next_state.active_layer_idx;
             
             self.painter.redraw_all_layers(&self.device, &self.queue, &self.viewport.document);
-            log::info!("Performed Redo. Undo stack size: {}, Redo stack size: {}", self.undo_stack.len(), self.redo_stack.len());
+            log::info!("Performed Redo. Undo stack size: {}, Redo stack size: {}", self.app_state.history.undo_stack.len(), self.app_state.history.redo_stack.len());
         } else {
             log::info!("Nothing to redo");
         }
@@ -2090,8 +1873,3 @@ pub struct UvViewerWindow {
     pub layer_tex_ids: Vec<egui::TextureId>,
 }
 
-#[derive(Clone)]
-struct UndoState {
-    layers: Vec<crate::painter::Layer>,
-    active_layer_idx: usize,
-}
