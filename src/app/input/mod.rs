@@ -5,7 +5,7 @@ use winit::keyboard::{PhysicalKey, KeyCode};
 use crate::app::architecture::message::{
     InputStateCommand, Message, ToolCommand, ToolKind, UiAction, ViewportCommand,
 };
-use crate::app::State;
+use crate::app::architecture::state::InputSnapshot;
 
 pub type PointerId = u64;
 
@@ -110,7 +110,7 @@ fn parse_mouse_button(button: &str) -> Option<MouseButton> {
     }
 }
 
-fn binding_matches_key(state: &State, binding: &crate::app::user_preferences::KeyBinding, key: KeyCode) -> bool {
+fn binding_matches_key(input: &InputSnapshot, binding: &crate::app::user_preferences::KeyBinding, key: KeyCode) -> bool {
     let Some(expected) = parse_key_code(&binding.key) else {
         return false;
     };
@@ -120,21 +120,21 @@ fn binding_matches_key(state: &State, binding: &crate::app::user_preferences::Ke
     }
 
     if binding.primary_mod {
-        if !(state.app_state.input().ctrl || state.app_state.input().cmd) {
+        if !(input.ctrl || input.cmd) {
             return false;
         }
     }
 
-    if binding.ctrl && !state.app_state.input().ctrl {
+    if binding.ctrl && !input.ctrl {
         return false;
     }
-    if binding.cmd && !state.app_state.input().cmd {
+    if binding.cmd && !input.cmd {
         return false;
     }
-    if binding.alt && !state.app_state.input().alt {
+    if binding.alt && !input.alt {
         return false;
     }
-    if binding.shift && !state.app_state.input().shift {
+    if binding.shift && !input.shift {
         return false;
     }
 
@@ -146,7 +146,7 @@ fn binding_matches_mouse(binding: &crate::app::user_preferences::MouseBinding, b
 }
 
 fn pointer_from_position(
-    state: &State,
+    input: &InputSnapshot,
     pos: PhysicalPosition<f64>,
     delta: glam::Vec2,
     device_kind: PointerDeviceKind,
@@ -164,22 +164,26 @@ fn pointer_from_position(
         tilt: None,
         barrel_button: None,
         buttons: PointerButtonSnapshot {
-            primary: state.app_state.input().paint_button_down,
-            secondary: state.app_state.input().pan_button_down,
+            primary: input.paint_button_down,
+            secondary: input.pan_button_down,
             middle: false,
         },
         modifiers: ModifiersSnapshot {
-            ctrl: state.app_state.input().ctrl,
-            cmd: state.app_state.input().cmd,
-            shift: state.app_state.input().shift,
-            alt: state.app_state.input().alt,
+            ctrl: input.ctrl,
+            cmd: input.cmd,
+            shift: input.shift,
+            alt: input.alt,
         },
         hover_state,
         timestamp: std::time::Instant::now(),
     }
 }
 
-pub fn normalize_window_event(state: &State, event: &WindowEvent) -> Vec<Message> {
+pub fn normalize_window_event(
+    input: &InputSnapshot,
+    bindings: &crate::app::user_preferences::InputBindings,
+    event: &WindowEvent,
+) -> Vec<Message> {
     let mut out = Vec::new();
 
     match event {
@@ -187,25 +191,25 @@ pub fn normalize_window_event(state: &State, event: &WindowEvent) -> Vec<Message
             pressure, stage, ..
         } => {
             let mut modifiers = ModifiersSnapshot {
-                ctrl: state.app_state.input().ctrl,
-                cmd: state.app_state.input().cmd,
-                shift: state.app_state.input().shift,
-                alt: state.app_state.input().alt,
+                ctrl: input.ctrl,
+                cmd: input.cmd,
+                shift: input.shift,
+                alt: input.alt,
             };
             if *stage <= 0 {
-                modifiers.alt = state.app_state.input().alt;
+                modifiers.alt = input.alt;
             }
             out.push(Message::InputState(
                 InputStateCommand::UpdateModifiersSnapshot(modifiers),
             ));
 
             let pressure_pointer = pointer_from_position(
-                state,
-                state.app_state.input().last_mouse_pos,
+                input,
+                input.last_mouse_pos,
                 glam::Vec2::ZERO,
                 PointerDeviceKind::Trackpad,
                 Some(pressure.clamp(0.0, 1.0) as f32),
-                if state.app_state.input().paint_button_down {
+                if input.paint_button_down {
                     HoverState::Contact
                 } else {
                     HoverState::Hovering
@@ -216,8 +220,8 @@ pub fn normalize_window_event(state: &State, event: &WindowEvent) -> Vec<Message
                 out.push(Message::InputState(InputStateCommand::UpdateMousePosition(
                     pressure_pointer,
                 )));
-                if state.app_state.input().paint_button_down {
-                    if state.app_state.input().orbit_modifier || state.app_state.input().alt {
+                if input.paint_button_down {
+                    if input.orbit_modifier || input.alt {
                         out.push(Message::Viewport(ViewportCommand::Orbit {
                             dx: 0.0,
                             dy: 0.0,
@@ -244,7 +248,7 @@ pub fn normalize_window_event(state: &State, event: &WindowEvent) -> Vec<Message
                 None => Some(1.0),
             };
             let pointer = pointer_from_position(
-                state,
+                input,
                 touch.location,
                 glam::Vec2::ZERO,
                 PointerDeviceKind::Touch,
@@ -261,20 +265,20 @@ pub fn normalize_window_event(state: &State, event: &WindowEvent) -> Vec<Message
                         pointer,
                     )));
                     if binding_matches_mouse(
-                        &state.preferences.bindings.paint_button,
+                        &bindings.paint_button,
                         winit::event::MouseButton::Left,
                     ) {
                         out.push(Message::InputState(InputStateCommand::SetPaintButtonDown(
                             true,
                         )));
-                        if !state.app_state.input().orbit_modifier && !state.app_state.input().alt {
+                        if !input.orbit_modifier && !input.alt {
                             out.push(Message::Tool(ToolCommand::PointerDown(pointer)));
                         }
                     }
                 }
                 TouchPhase::Moved => {
-                    let dx = (touch.location.x - state.app_state.input().last_mouse_pos.x) as f32;
-                    let dy = (touch.location.y - state.app_state.input().last_mouse_pos.y) as f32;
+                    let dx = (touch.location.x - input.last_mouse_pos.x) as f32;
+                    let dy = (touch.location.y - input.last_mouse_pos.y) as f32;
                     let mut pointer_with_delta = pointer;
                     pointer_with_delta.delta = glam::Vec2::new(dx, dy);
 
@@ -282,13 +286,13 @@ pub fn normalize_window_event(state: &State, event: &WindowEvent) -> Vec<Message
                         pointer_with_delta,
                     )));
 
-                    if state.app_state.input().paint_button_down {
-                        if state.app_state.input().orbit_modifier || state.app_state.input().alt {
+                    if input.paint_button_down {
+                        if input.orbit_modifier || input.alt {
                             out.push(Message::Viewport(ViewportCommand::Orbit { dx, dy }));
                         } else {
                             out.push(Message::Tool(ToolCommand::PointerMove(pointer_with_delta)));
                         }
-                    } else if state.app_state.input().pan_button_down {
+                    } else if input.pan_button_down {
                         out.push(Message::Viewport(ViewportCommand::Pan { dx, dy }));
                     }
                 }
@@ -322,11 +326,11 @@ pub fn normalize_window_event(state: &State, event: &WindowEvent) -> Vec<Message
                     is_pressed,
                 }));
 
-                if binding_matches_key(state, &state.preferences.bindings.orbit_modifier, code) {
+                if binding_matches_key(input, &bindings.orbit_modifier, code) {
                     out.push(Message::InputState(InputStateCommand::SetOrbitModifier(
                         is_pressed,
                     )));
-                } else if binding_matches_key(state, &state.preferences.bindings.pan_modifier, code)
+                } else if binding_matches_key(input, &bindings.pan_modifier, code)
                 {
                     out.push(Message::InputState(InputStateCommand::SetAltModifier(
                         is_pressed,
@@ -334,23 +338,23 @@ pub fn normalize_window_event(state: &State, event: &WindowEvent) -> Vec<Message
                 }
 
                 if is_pressed {
-                    if binding_matches_key(state, &state.preferences.bindings.undo, code) {
+                    if binding_matches_key(input, &bindings.undo, code) {
                         out.push(Message::Ui(UiAction::Undo));
-                    } else if binding_matches_key(state, &state.preferences.bindings.redo, code) {
+                    } else if binding_matches_key(input, &bindings.redo, code) {
                         out.push(Message::Ui(UiAction::Redo));
-                    } else if binding_matches_key(state, &state.preferences.bindings.brush_size_down, code)
+                    } else if binding_matches_key(input, &bindings.brush_size_down, code)
                     {
                         out.push(Message::Ui(UiAction::AdjustBrushSize(-5.0)));
-                    } else if binding_matches_key(state, &state.preferences.bindings.brush_size_up, code)
+                    } else if binding_matches_key(input, &bindings.brush_size_up, code)
                     {
                         out.push(Message::Ui(UiAction::AdjustBrushSize(5.0)));
-                    } else if binding_matches_key(state, &state.preferences.bindings.clear_canvas, code)
+                    } else if binding_matches_key(input, &bindings.clear_canvas, code)
                     {
                         out.push(Message::Ui(UiAction::ClearCanvas));
-                    } else if binding_matches_key(state, &state.preferences.bindings.tool_brush, code)
+                    } else if binding_matches_key(input, &bindings.tool_brush, code)
                     {
                         out.push(Message::Ui(UiAction::SelectTool(ToolKind::Brush)));
-                    } else if binding_matches_key(state, &state.preferences.bindings.tool_eraser, code)
+                    } else if binding_matches_key(input, &bindings.tool_eraser, code)
                     {
                         out.push(Message::Ui(UiAction::SelectTool(ToolKind::Eraser)));
                     }
@@ -363,8 +367,8 @@ pub fn normalize_window_event(state: &State, event: &WindowEvent) -> Vec<Message
             ..
         } => {
             let pointer = pointer_from_position(
-                state,
-                state.app_state.input().last_mouse_pos,
+                input,
+                input.last_mouse_pos,
                 glam::Vec2::ZERO,
                 PointerDeviceKind::Mouse,
                 None,
@@ -381,15 +385,15 @@ pub fn normalize_window_event(state: &State, event: &WindowEvent) -> Vec<Message
                         pointer,
                     )));
 
-                    if binding_matches_mouse(&state.preferences.bindings.paint_button, *button)
+                    if binding_matches_mouse(&bindings.paint_button, *button)
                     {
                         out.push(Message::InputState(InputStateCommand::SetPaintButtonDown(
                             true,
                         )));
-                        if !state.app_state.input().orbit_modifier && !state.app_state.input().alt {
+                        if !input.orbit_modifier && !input.alt {
                             out.push(Message::Tool(ToolCommand::PointerDown(pointer)));
                         }
-                    } else if binding_matches_mouse(&state.preferences.bindings.pan_button, *button)
+                    } else if binding_matches_mouse(&bindings.pan_button, *button)
                     {
                         out.push(Message::InputState(InputStateCommand::SetPanButtonDown(
                             true,
@@ -401,14 +405,14 @@ pub fn normalize_window_event(state: &State, event: &WindowEvent) -> Vec<Message
                         pointer,
                     )));
 
-                    if binding_matches_mouse(&state.preferences.bindings.paint_button, *button)
+                    if binding_matches_mouse(&bindings.paint_button, *button)
                     {
                         out.push(Message::InputState(InputStateCommand::SetPaintButtonDown(
                             false,
                         )));
                         out.push(Message::InputState(InputStateCommand::ResetPenPressure));
                         out.push(Message::Tool(ToolCommand::PointerUp(pointer)));
-                    } else if binding_matches_mouse(&state.preferences.bindings.pan_button, *button)
+                    } else if binding_matches_mouse(&bindings.pan_button, *button)
                     {
                         out.push(Message::InputState(InputStateCommand::SetPanButtonDown(
                             false,
@@ -425,16 +429,16 @@ pub fn normalize_window_event(state: &State, event: &WindowEvent) -> Vec<Message
         }
         WindowEvent::CursorMoved { position, .. } => {
             let delta = glam::Vec2::new(
-                (position.x - state.app_state.input().last_mouse_pos.x) as f32,
-                (position.y - state.app_state.input().last_mouse_pos.y) as f32,
+                (position.x - input.last_mouse_pos.x) as f32,
+                (position.y - input.last_mouse_pos.y) as f32,
             );
             let pointer = pointer_from_position(
-                state,
+                input,
                 *position,
                 delta,
                 PointerDeviceKind::Mouse,
                 None,
-                if state.app_state.input().paint_button_down {
+                if input.paint_button_down {
                     HoverState::Contact
                 } else {
                     HoverState::Hovering
@@ -445,8 +449,8 @@ pub fn normalize_window_event(state: &State, event: &WindowEvent) -> Vec<Message
                 pointer,
             )));
 
-            if state.app_state.input().paint_button_down {
-                if state.app_state.input().orbit_modifier || state.app_state.input().alt {
+            if input.paint_button_down {
+                if input.orbit_modifier || input.alt {
                     out.push(Message::Viewport(ViewportCommand::Orbit {
                         dx: delta.x,
                         dy: delta.y,
@@ -454,7 +458,7 @@ pub fn normalize_window_event(state: &State, event: &WindowEvent) -> Vec<Message
                 } else {
                     out.push(Message::Tool(ToolCommand::PointerMove(pointer)));
                 }
-            } else if state.app_state.input().pan_button_down {
+            } else if input.pan_button_down {
                 out.push(Message::Viewport(ViewportCommand::Pan {
                     dx: delta.x,
                     dy: delta.y,
@@ -463,8 +467,8 @@ pub fn normalize_window_event(state: &State, event: &WindowEvent) -> Vec<Message
         }
         WindowEvent::CursorEntered { .. } => {
             let pointer = pointer_from_position(
-                state,
-                state.app_state.input().last_mouse_pos,
+                input,
+                input.last_mouse_pos,
                 glam::Vec2::ZERO,
                 PointerDeviceKind::Mouse,
                 None,
@@ -476,8 +480,8 @@ pub fn normalize_window_event(state: &State, event: &WindowEvent) -> Vec<Message
         }
         WindowEvent::CursorLeft { .. } => {
             let pointer = pointer_from_position(
-                state,
-                state.app_state.input().last_mouse_pos,
+                input,
+                input.last_mouse_pos,
                 glam::Vec2::ZERO,
                 PointerDeviceKind::Mouse,
                 None,

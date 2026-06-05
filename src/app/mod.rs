@@ -268,7 +268,7 @@ impl State {
         if egui_resp.consumed {
             return true;
         }
-        let messages = input::normalize_window_event(self, event);
+        let messages = input::normalize_window_event(self.app_state.input(), &self.preferences.bindings, event);
         let mut consumed = false;
         for message in messages {
             consumed |= architecture::reducer::dispatch(self, message);
