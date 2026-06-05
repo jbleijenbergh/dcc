@@ -42,18 +42,15 @@ pub struct State {
     // Async loading state
     gltf_rx: Option<std::sync::mpsc::Receiver<Result<(crate::mesh::Document, String, Vec<Vec<crate::painter::PaintStroke>>), String>>>,
     gltf_loading_status: Option<Arc<std::sync::Mutex<String>>>,
-    is_loading_gltf: bool,
 
     pub import_settings: crate::mesh::ImportSettings,
     current_stroke: Option<crate::painter::PaintStroke>,
-    error_details: Option<LoadError>,
-    error_time: Option<std::time::Instant>,
     loading_path: Option<std::path::PathBuf>,
     supported_present_modes: Vec<wgpu::PresentMode>,
 
     preferences: UserPreferences,
     preferences_path: PathBuf,
-    settings_feedback: Option<String>,
+    ui_state: ui::TransientUiState,
 
     pub app_state: architecture::state::AppState,
 }
@@ -180,21 +177,18 @@ impl State {
             uv_viewer: None,
             gltf_rx: None,
             gltf_loading_status: None,
-            is_loading_gltf: false,
             import_settings: crate::mesh::ImportSettings {
                 seams_option: crate::mesh::SeamsOption::GenerateMissing,
                 margin_size: crate::mesh::MarginSize::Medium,
                 island_orientation: crate::mesh::IslandOrientation::AlignWith3DMesh,
             },
             current_stroke: None,
-            error_details: None,
-            error_time: None,
             loading_path: None,
             supported_present_modes: surface_caps.present_modes,
 
             preferences,
             preferences_path,
-            settings_feedback: None,
+            ui_state: ui::TransientUiState::default(),
             app_state: architecture::state::AppState {
                 document: architecture::state::DocumentState {
                     active_layer_idx: 0,
@@ -326,10 +320,10 @@ impl State {
                     self.preferences.bindings.pan_modifier.key,
                     self.preferences.bindings.undo.key,
                     self.preferences.bindings.redo.key);
-                self.settings_feedback = Some(feedback);
+                self.ui_state.settings_feedback = Some(feedback);
             }
             Err(e) => {
-                self.settings_feedback = Some(format!("Failed to save settings: {}", e));
+                self.ui_state.settings_feedback = Some(format!("Failed to save settings: {}", e));
                 log::error!("Failed to save bindings to {}: {}", self.preferences_path.display(), e);
             }
         }
@@ -374,9 +368,6 @@ impl State {
 
         self.app_state.history.undo_len = self.app_state.history.undo_stack.len();
         self.app_state.history.redo_len = self.app_state.history.redo_stack.len();
-
-        self.app_state.resources.is_loading_gltf = self.is_loading_gltf;
-        self.app_state.resources.has_error = self.error_details.is_some();
 
         self.app_state.input.pan_modifier = self.app_state.input.alt;
     }
@@ -482,7 +473,7 @@ impl State {
     pub fn update(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         if let Some(ref rx) = self.gltf_rx {
             if let Ok(res) = rx.try_recv() {
-                self.is_loading_gltf = false;
+                self.app_state.resources.is_loading_gltf = false;
                 self.gltf_rx = None;
                 self.gltf_loading_status = None;
                 let path = self.loading_path.take().unwrap_or_default();
@@ -492,8 +483,9 @@ impl State {
                         self.viewport.update_node_transforms(&self.queue);
                         self.app_state.document.current_mesh = filename;
                         self.focus_camera_on_model();
-                        self.error_details = None;
-                        self.error_time = None;
+                        self.ui_state.error_details = None;
+                        self.ui_state.error_time = None;
+                        self.app_state.resources.has_error = false;
                         
                         // Assign background reprojected strokes back to layers
                         for (layer_idx, strokes) in reprojected_strokes.into_iter().enumerate() {
@@ -507,8 +499,9 @@ impl State {
                     }
                     Err(e) => {
                         log::error!("Failed to load glTF model: {}", e);
-                        self.error_details = Some(LoadError { path, message: e.clone() });
-                        self.error_time = Some(std::time::Instant::now());
+                        self.ui_state.error_details = Some(LoadError { path, message: e.clone() });
+                        self.ui_state.error_time = Some(std::time::Instant::now());
+                        self.app_state.resources.has_error = true;
                     }
                 }
             }
@@ -614,8 +607,8 @@ impl State {
         self.egui_ctx.begin_pass(egui_input);
 
         let mut close_error = false;
-        if let Some(ref err) = self.error_details {
-            let can_dismiss = self.error_time.map_or(true, |t| t.elapsed().as_secs_f32() > 0.3);
+        if let Some(ref err) = self.ui_state.error_details {
+            let can_dismiss = self.ui_state.error_time.map_or(true, |t| t.elapsed().as_secs_f32() > 0.3);
             egui::Window::new("Error Loading Model")
                 .collapsible(false)
                 .resizable(false)
@@ -665,8 +658,9 @@ impl State {
                 });
         }
         if close_error {
-            self.error_details = None;
-            self.error_time = None;
+            self.ui_state.error_details = None;
+            self.ui_state.error_time = None;
+            self.app_state.resources.has_error = false;
         }
 
         let mut export_requested = false;
@@ -1350,7 +1344,7 @@ impl State {
                         }
                     }
 
-                    if let Some(msg) = &self.settings_feedback {
+                    if let Some(msg) = &self.ui_state.settings_feedback {
                         ui.label(egui::RichText::new(msg).small());
                     }
                 });
@@ -1478,7 +1472,7 @@ impl State {
             self.recompute_and_reproject();
         }
 
-        if self.is_loading_gltf {
+        if self.app_state.resources.is_loading_gltf {
             let status_msg = self.gltf_loading_status.as_ref()
                 .and_then(|status| status.lock().ok())
                 .map(|g| g.clone())

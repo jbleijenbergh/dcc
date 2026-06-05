@@ -1,4 +1,14 @@
+use std::time::Instant;
+
+use super::LoadError;
 use crate::mesh::{MaterialInfo, Node, Mesh};
+
+#[derive(Debug, Default)]
+pub(super) struct TransientUiState {
+    pub error_details: Option<LoadError>,
+    pub error_time: Option<Instant>,
+    pub settings_feedback: Option<String>,
+}
 
 pub(super) fn draw_node_tree(ui: &mut egui::Ui, nodes: &[Node], node_idx: usize, materials: &[MaterialInfo]) {
     if node_idx >= nodes.len() {

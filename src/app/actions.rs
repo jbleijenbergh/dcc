@@ -138,7 +138,7 @@ impl State {
     pub fn load_gltf_file(&mut self, path: &std::path::Path) {
         let (tx, rx) = std::sync::mpsc::channel();
         self.gltf_rx = Some(rx);
-        self.is_loading_gltf = true;
+        self.app_state.resources.is_loading_gltf = true;
         self.loading_path = Some(path.to_path_buf());
 
         // Extract strokes from non-fill layers to clone and reproject in background
