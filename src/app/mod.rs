@@ -11,10 +11,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use winit::event::WindowEvent;
-use winit::keyboard::KeyCode;
 use winit::window::Window;
 use crate::painter::BlendMode;
-use user_preferences::{UserPreferences, KEY_CHOICES, MOUSE_BUTTON_CHOICES, parse_key_code, parse_mouse_button};
+use user_preferences::{UserPreferences, KEY_CHOICES, MOUSE_BUTTON_CHOICES};
 
 #[derive(Default)]
 pub(crate) struct InteractionState {
@@ -244,40 +243,6 @@ impl State {
         ((p - min_start) / (max_at - min_start)).clamp(0.0, 1.0)
     }
 
-    pub(crate) fn binding_matches_key(&self, binding: &user_preferences::KeyBinding, key: KeyCode) -> bool {
-        let Some(expected) = parse_key_code(&binding.key) else {
-            return false;
-        };
-
-        if expected != key {
-            return false;
-        }
-
-        if binding.primary_mod {
-            if !(self.app_state.input().ctrl || self.app_state.input().cmd) {
-                return false;
-            }
-        }
-
-        if binding.ctrl && !self.app_state.input().ctrl {
-            return false;
-        }
-        if binding.cmd && !self.app_state.input().cmd {
-            return false;
-        }
-        if binding.alt && !self.app_state.input().alt {
-            return false;
-        }
-        if binding.shift && !self.app_state.input().shift {
-            return false;
-        }
-
-        true
-    }
-
-    pub(crate) fn binding_matches_mouse(&self, binding: &user_preferences::MouseBinding, button: winit::event::MouseButton) -> bool {
-        parse_mouse_button(&binding.button).map_or(false, |expected| expected == button)
-    }
 
     fn save_settings(&mut self) {
         log::debug!("Saving bindings to {}", self.preferences_path.display());

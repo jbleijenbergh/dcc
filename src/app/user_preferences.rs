@@ -2,8 +2,6 @@ use std::fs;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use winit::event::MouseButton;
-use winit::keyboard::KeyCode;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UserPreferences {
@@ -159,59 +157,6 @@ impl UserPreferences {
     }
 }
 
-pub fn parse_key_code(key: &str) -> Option<KeyCode> {
-    match key {
-        "Space" => Some(KeyCode::Space),
-        "AltLeft" => Some(KeyCode::AltLeft),
-        "AltRight" => Some(KeyCode::AltRight),
-        "ControlLeft" => Some(KeyCode::ControlLeft),
-        "ControlRight" => Some(KeyCode::ControlRight),
-        "SuperLeft" => Some(KeyCode::SuperLeft),
-        "SuperRight" => Some(KeyCode::SuperRight),
-        "ShiftLeft" => Some(KeyCode::ShiftLeft),
-        "ShiftRight" => Some(KeyCode::ShiftRight),
-        "BracketLeft" => Some(KeyCode::BracketLeft),
-        "BracketRight" => Some(KeyCode::BracketRight),
-        "KeyA" => Some(KeyCode::KeyA),
-        "KeyB" => Some(KeyCode::KeyB),
-        "KeyC" => Some(KeyCode::KeyC),
-        "KeyD" => Some(KeyCode::KeyD),
-        "KeyE" => Some(KeyCode::KeyE),
-        "KeyF" => Some(KeyCode::KeyF),
-        "KeyG" => Some(KeyCode::KeyG),
-        "KeyH" => Some(KeyCode::KeyH),
-        "KeyI" => Some(KeyCode::KeyI),
-        "KeyJ" => Some(KeyCode::KeyJ),
-        "KeyK" => Some(KeyCode::KeyK),
-        "KeyL" => Some(KeyCode::KeyL),
-        "KeyM" => Some(KeyCode::KeyM),
-        "KeyN" => Some(KeyCode::KeyN),
-        "KeyO" => Some(KeyCode::KeyO),
-        "KeyP" => Some(KeyCode::KeyP),
-        "KeyQ" => Some(KeyCode::KeyQ),
-        "KeyR" => Some(KeyCode::KeyR),
-        "KeyS" => Some(KeyCode::KeyS),
-        "KeyT" => Some(KeyCode::KeyT),
-        "KeyU" => Some(KeyCode::KeyU),
-        "KeyV" => Some(KeyCode::KeyV),
-        "KeyW" => Some(KeyCode::KeyW),
-        "KeyX" => Some(KeyCode::KeyX),
-        "KeyY" => Some(KeyCode::KeyY),
-        "KeyZ" => Some(KeyCode::KeyZ),
-        _ => None,
-    }
-}
-
-pub fn parse_mouse_button(button: &str) -> Option<MouseButton> {
-    match button {
-        "Left" => Some(MouseButton::Left),
-        "Right" => Some(MouseButton::Right),
-        "Middle" => Some(MouseButton::Middle),
-        "Back" => Some(MouseButton::Back),
-        "Forward" => Some(MouseButton::Forward),
-        _ => None,
-    }
-}
 
 pub const KEY_CHOICES: &[&str] = &[
     "Space",

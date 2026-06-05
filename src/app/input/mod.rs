@@ -1,6 +1,6 @@
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
-use winit::keyboard::PhysicalKey;
+use winit::keyboard::{PhysicalKey, KeyCode};
 
 use crate::app::architecture::message::{
     InputStateCommand, Message, ToolCommand, ToolKind, UiAction, ViewportCommand,
@@ -54,6 +54,95 @@ pub struct PointerData {
     pub modifiers: ModifiersSnapshot,
     pub hover_state: HoverState,
     pub timestamp: std::time::Instant,
+}
+
+fn parse_key_code(key: &str) -> Option<KeyCode> {
+    match key {
+        "Space" => Some(KeyCode::Space),
+        "AltLeft" => Some(KeyCode::AltLeft),
+        "AltRight" => Some(KeyCode::AltRight),
+        "ControlLeft" => Some(KeyCode::ControlLeft),
+        "ControlRight" => Some(KeyCode::ControlRight),
+        "SuperLeft" => Some(KeyCode::SuperLeft),
+        "SuperRight" => Some(KeyCode::SuperRight),
+        "ShiftLeft" => Some(KeyCode::ShiftLeft),
+        "ShiftRight" => Some(KeyCode::ShiftRight),
+        "BracketLeft" => Some(KeyCode::BracketLeft),
+        "BracketRight" => Some(KeyCode::BracketRight),
+        "KeyA" => Some(KeyCode::KeyA),
+        "KeyB" => Some(KeyCode::KeyB),
+        "KeyC" => Some(KeyCode::KeyC),
+        "KeyD" => Some(KeyCode::KeyD),
+        "KeyE" => Some(KeyCode::KeyE),
+        "KeyF" => Some(KeyCode::KeyF),
+        "KeyG" => Some(KeyCode::KeyG),
+        "KeyH" => Some(KeyCode::KeyH),
+        "KeyI" => Some(KeyCode::KeyI),
+        "KeyJ" => Some(KeyCode::KeyJ),
+        "KeyK" => Some(KeyCode::KeyK),
+        "KeyL" => Some(KeyCode::KeyL),
+        "KeyM" => Some(KeyCode::KeyM),
+        "KeyN" => Some(KeyCode::KeyN),
+        "KeyO" => Some(KeyCode::KeyO),
+        "KeyP" => Some(KeyCode::KeyP),
+        "KeyQ" => Some(KeyCode::KeyQ),
+        "KeyR" => Some(KeyCode::KeyR),
+        "KeyS" => Some(KeyCode::KeyS),
+        "KeyT" => Some(KeyCode::KeyT),
+        "KeyU" => Some(KeyCode::KeyU),
+        "KeyV" => Some(KeyCode::KeyV),
+        "KeyW" => Some(KeyCode::KeyW),
+        "KeyX" => Some(KeyCode::KeyX),
+        "KeyY" => Some(KeyCode::KeyY),
+        "KeyZ" => Some(KeyCode::KeyZ),
+        _ => None,
+    }
+}
+
+fn parse_mouse_button(button: &str) -> Option<MouseButton> {
+    match button {
+        "Left" => Some(MouseButton::Left),
+        "Right" => Some(MouseButton::Right),
+        "Middle" => Some(MouseButton::Middle),
+        "Back" => Some(MouseButton::Back),
+        "Forward" => Some(MouseButton::Forward),
+        _ => None,
+    }
+}
+
+fn binding_matches_key(state: &State, binding: &crate::app::user_preferences::KeyBinding, key: KeyCode) -> bool {
+    let Some(expected) = parse_key_code(&binding.key) else {
+        return false;
+    };
+
+    if expected != key {
+        return false;
+    }
+
+    if binding.primary_mod {
+        if !(state.app_state.input().ctrl || state.app_state.input().cmd) {
+            return false;
+        }
+    }
+
+    if binding.ctrl && !state.app_state.input().ctrl {
+        return false;
+    }
+    if binding.cmd && !state.app_state.input().cmd {
+        return false;
+    }
+    if binding.alt && !state.app_state.input().alt {
+        return false;
+    }
+    if binding.shift && !state.app_state.input().shift {
+        return false;
+    }
+
+    true
+}
+
+fn binding_matches_mouse(binding: &crate::app::user_preferences::MouseBinding, button: MouseButton) -> bool {
+    parse_mouse_button(&binding.button).map_or(false, |expected| expected == button)
 }
 
 fn pointer_from_position(
@@ -171,7 +260,7 @@ pub fn normalize_window_event(state: &State, event: &WindowEvent) -> Vec<Message
                     out.push(Message::InputState(InputStateCommand::UpdateMousePosition(
                         pointer,
                     )));
-                    if state.binding_matches_mouse(
+                    if binding_matches_mouse(
                         &state.preferences.bindings.paint_button,
                         winit::event::MouseButton::Left,
                     ) {
@@ -233,11 +322,11 @@ pub fn normalize_window_event(state: &State, event: &WindowEvent) -> Vec<Message
                     is_pressed,
                 }));
 
-                if state.binding_matches_key(&state.preferences.bindings.orbit_modifier, code) {
+                if binding_matches_key(state, &state.preferences.bindings.orbit_modifier, code) {
                     out.push(Message::InputState(InputStateCommand::SetOrbitModifier(
                         is_pressed,
                     )));
-                } else if state.binding_matches_key(&state.preferences.bindings.pan_modifier, code)
+                } else if binding_matches_key(state, &state.preferences.bindings.pan_modifier, code)
                 {
                     out.push(Message::InputState(InputStateCommand::SetAltModifier(
                         is_pressed,
@@ -245,28 +334,23 @@ pub fn normalize_window_event(state: &State, event: &WindowEvent) -> Vec<Message
                 }
 
                 if is_pressed {
-                    if state.binding_matches_key(&state.preferences.bindings.undo, code) {
+                    if binding_matches_key(state, &state.preferences.bindings.undo, code) {
                         out.push(Message::Ui(UiAction::Undo));
-                    } else if state.binding_matches_key(&state.preferences.bindings.redo, code) {
+                    } else if binding_matches_key(state, &state.preferences.bindings.redo, code) {
                         out.push(Message::Ui(UiAction::Redo));
-                    } else if state
-                        .binding_matches_key(&state.preferences.bindings.brush_size_down, code)
+                    } else if binding_matches_key(state, &state.preferences.bindings.brush_size_down, code)
                     {
                         out.push(Message::Ui(UiAction::AdjustBrushSize(-5.0)));
-                    } else if state
-                        .binding_matches_key(&state.preferences.bindings.brush_size_up, code)
+                    } else if binding_matches_key(state, &state.preferences.bindings.brush_size_up, code)
                     {
                         out.push(Message::Ui(UiAction::AdjustBrushSize(5.0)));
-                    } else if state
-                        .binding_matches_key(&state.preferences.bindings.clear_canvas, code)
+                    } else if binding_matches_key(state, &state.preferences.bindings.clear_canvas, code)
                     {
                         out.push(Message::Ui(UiAction::ClearCanvas));
-                    } else if state
-                        .binding_matches_key(&state.preferences.bindings.tool_brush, code)
+                    } else if binding_matches_key(state, &state.preferences.bindings.tool_brush, code)
                     {
                         out.push(Message::Ui(UiAction::SelectTool(ToolKind::Brush)));
-                    } else if state
-                        .binding_matches_key(&state.preferences.bindings.tool_eraser, code)
+                    } else if binding_matches_key(state, &state.preferences.bindings.tool_eraser, code)
                     {
                         out.push(Message::Ui(UiAction::SelectTool(ToolKind::Eraser)));
                     }
@@ -297,8 +381,7 @@ pub fn normalize_window_event(state: &State, event: &WindowEvent) -> Vec<Message
                         pointer,
                     )));
 
-                    if state
-                        .binding_matches_mouse(&state.preferences.bindings.paint_button, *button)
+                    if binding_matches_mouse(&state.preferences.bindings.paint_button, *button)
                     {
                         out.push(Message::InputState(InputStateCommand::SetPaintButtonDown(
                             true,
@@ -306,8 +389,7 @@ pub fn normalize_window_event(state: &State, event: &WindowEvent) -> Vec<Message
                         if !state.app_state.input().orbit_modifier && !state.app_state.input().alt {
                             out.push(Message::Tool(ToolCommand::PointerDown(pointer)));
                         }
-                    } else if state
-                        .binding_matches_mouse(&state.preferences.bindings.pan_button, *button)
+                    } else if binding_matches_mouse(&state.preferences.bindings.pan_button, *button)
                     {
                         out.push(Message::InputState(InputStateCommand::SetPanButtonDown(
                             true,
@@ -319,16 +401,14 @@ pub fn normalize_window_event(state: &State, event: &WindowEvent) -> Vec<Message
                         pointer,
                     )));
 
-                    if state
-                        .binding_matches_mouse(&state.preferences.bindings.paint_button, *button)
+                    if binding_matches_mouse(&state.preferences.bindings.paint_button, *button)
                     {
                         out.push(Message::InputState(InputStateCommand::SetPaintButtonDown(
                             false,
                         )));
                         out.push(Message::InputState(InputStateCommand::ResetPenPressure));
                         out.push(Message::Tool(ToolCommand::PointerUp(pointer)));
-                    } else if state
-                        .binding_matches_mouse(&state.preferences.bindings.pan_button, *button)
+                    } else if binding_matches_mouse(&state.preferences.bindings.pan_button, *button)
                     {
                         out.push(Message::InputState(InputStateCommand::SetPanButtonDown(
                             false,
