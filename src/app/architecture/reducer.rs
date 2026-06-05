@@ -113,6 +113,37 @@ fn apply_modifiers_snapshot(state: &mut State, modifiers: ModifiersSnapshot) {
     state.app_state.input.alt = modifiers.alt;
 }
 
+fn rerender_fill_layer(state: &mut State, idx: usize) {
+    if idx >= state.painter.layers.len() || !state.painter.layers[idx].is_fill {
+        return;
+    }
+
+    let layer = &state.painter.layers[idx];
+    let base = [
+        layer.fill_color[0] as f32 / 255.0,
+        layer.fill_color[1] as f32 / 255.0,
+        layer.fill_color[2] as f32 / 255.0,
+        layer.fill_color[3] as f32 / 255.0,
+    ];
+    let noise = [
+        layer.fill_noise_color[0] as f32 / 255.0,
+        layer.fill_noise_color[1] as f32 / 255.0,
+        layer.fill_noise_color[2] as f32 / 255.0,
+        layer.fill_noise_color[3] as f32 / 255.0,
+    ];
+    state.painter.render_fill_layer(
+        &state.device,
+        &state.queue,
+        idx,
+        base,
+        noise,
+        layer.fill_noise_scale,
+        layer.fill_projection_mode,
+        &state.viewport.document,
+    );
+    state.painter.compose_layers(&state.device, &state.queue);
+}
+
 pub fn dispatch(state: &mut State, message: Message) -> bool {
     match message {
         Message::Input(input) => match input {
@@ -269,6 +300,94 @@ pub fn dispatch(state: &mut State, message: Message) -> bool {
                 }
                 UiAction::SetUvWireframe(show) => {
                     state.app_state.ui.show_uv_wireframe = show;
+                }
+                UiAction::SelectLayer(idx) => {
+                    if idx < state.painter.layers.len() {
+                        state.painter.active_layer_idx = idx;
+                    }
+                }
+                UiAction::AddPaintLayer(name) => {
+                    let trimmed = name.trim();
+                    if !trimmed.is_empty() {
+                        state.push_undo_state();
+                        state.painter.add_paint_layer(trimmed.to_string(), &state.device, &state.queue);
+                    }
+                }
+                UiAction::AddUvGridLayer => {
+                    state.push_undo_state();
+                    state.painter.load_uv_grid_layer(&state.device, &state.queue);
+                }
+                UiAction::AddUvCheckerLayer => {
+                    state.push_undo_state();
+                    state.painter.load_uv_checker_layer(&state.device, &state.queue);
+                }
+                UiAction::AddFillLayer => {
+                    state.push_undo_state();
+                    let name = format!("Fill {}", state.painter.layers.len() + 1);
+                    state.painter.add_fill_layer(name, &state.device, &state.queue, &state.viewport.document);
+                }
+                UiAction::DeleteLayer(idx) => {
+                    if state.painter.layers.len() > 1 && idx < state.painter.layers.len() {
+                        state.push_undo_state();
+                        state.painter.delete_layer(idx, &state.device, &state.queue);
+                    }
+                }
+                UiAction::SetLayerVisible { idx, visible } => {
+                    if idx < state.painter.layers.len() && state.painter.layers[idx].visible != visible {
+                        state.push_undo_state();
+                        state.painter.layers[idx].visible = visible;
+                        state.painter.compose_layers(&state.device, &state.queue);
+                    }
+                }
+                UiAction::SetLayerBlendMode { idx, mode } => {
+                    if idx < state.painter.layers.len() && state.painter.layers[idx].blend_mode != mode {
+                        state.push_undo_state();
+                        state.painter.layers[idx].blend_mode = mode;
+                        state.painter.compose_layers(&state.device, &state.queue);
+                    }
+                }
+                UiAction::SetLayerOpacity { idx, opacity, begin_undo } => {
+                    if idx < state.painter.layers.len() {
+                        if begin_undo {
+                            state.push_undo_state();
+                        }
+                        state.painter.layers[idx].opacity = opacity.clamp(0.0, 1.0);
+                        state.painter.compose_layers(&state.device, &state.queue);
+                    }
+                }
+                UiAction::SetFillBaseColor { idx, color, begin_undo } => {
+                    if idx < state.painter.layers.len() && state.painter.layers[idx].is_fill {
+                        if begin_undo {
+                            state.push_undo_state();
+                        }
+                        state.painter.layers[idx].fill_color = color;
+                        rerender_fill_layer(state, idx);
+                    }
+                }
+                UiAction::SetFillNoiseColor { idx, color, begin_undo } => {
+                    if idx < state.painter.layers.len() && state.painter.layers[idx].is_fill {
+                        if begin_undo {
+                            state.push_undo_state();
+                        }
+                        state.painter.layers[idx].fill_noise_color = color;
+                        rerender_fill_layer(state, idx);
+                    }
+                }
+                UiAction::SetFillNoiseScale { idx, scale, begin_undo } => {
+                    if idx < state.painter.layers.len() && state.painter.layers[idx].is_fill {
+                        if begin_undo {
+                            state.push_undo_state();
+                        }
+                        state.painter.layers[idx].fill_noise_scale = scale;
+                        rerender_fill_layer(state, idx);
+                    }
+                }
+                UiAction::SetFillProjectionMode { idx, mode } => {
+                    if idx < state.painter.layers.len() && state.painter.layers[idx].is_fill && state.painter.layers[idx].fill_projection_mode != mode {
+                        state.push_undo_state();
+                        state.painter.layers[idx].fill_projection_mode = mode;
+                        rerender_fill_layer(state, idx);
+                    }
                 }
                 UiAction::ClearCanvas => {
                     state.push_undo_state();

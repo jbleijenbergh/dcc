@@ -35,7 +35,6 @@ pub struct DocumentState {
     pub layer_count: usize,
     pub current_mesh: String,
     pub num_udim_tiles: u32,
-    pub new_layer_name: String,
 }
 
 #[derive(Clone, Debug)]
