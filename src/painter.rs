@@ -810,12 +810,36 @@ impl Painter {
         let layer_idx = self.layers.len();
         self.layers.push(Layer::new("UV Checker".to_string()));
 
+        let canvas_size = self.width.max(self.height) as i32;
+        let mut resolutions = vec![(2048, "2K"), (4096, "4K"), (8192, "8K")];
+        resolutions.sort_by_key(|(res, _)| (canvas_size - *res).abs());
+        let preferred_suffixes: Vec<&str> = resolutions.into_iter().map(|(_, name)| name).collect();
+
         for t in 0..MAX_UDIMS {
-            let filename = format!("UV-CheckerMap_Maurus_0{}_8K.png", t + 1);
-            let img = match image::open(&filename) {
-                Ok(img) => img.into_rgba8(),
-                Err(e) => {
-                    log::error!("Failed to load {}: {}", filename, e);
+            let mut img_opt = None;
+            let mut tried_names = Vec::new();
+
+            for suffix in &preferred_suffixes {
+                let filename = format!("UV-CheckerMap_Maurus_0{}_{}.png", t + 1, suffix);
+                match image::open(&filename) {
+                    Ok(img) => {
+                        img_opt = Some((filename, img.into_rgba8()));
+                        break;
+                    }
+                    Err(_) => {
+                        tried_names.push(filename);
+                    }
+                }
+            }
+
+            let (_filename, img) = match img_opt {
+                Some(pair) => pair,
+                None => {
+                    log::error!(
+                        "Failed to load UV Checker map for tile {}. Tried files: {:?}",
+                        t + 1,
+                        tried_names
+                    );
                     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
                     let view_idx = layer_idx * MAX_UDIMS + t;
                     let _rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
