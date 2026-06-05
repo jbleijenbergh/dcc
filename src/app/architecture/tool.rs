@@ -23,15 +23,15 @@ impl ToolHandler for BrushTool {
     }
 
     fn on_pointer_down(&mut self, state: &mut State, _pointer: &PointerData) {
-        state.app_state.tool.active_tool = Tool::Brush;
-        if !state.app_state.input.orbit_modifier && !state.app_state.input.alt {
+        state.app_state.tool_mut().active_tool = Tool::Brush;
+        if !state.app_state.input().orbit_modifier && !state.app_state.input().alt {
             state.paint_at_cursor();
         }
     }
 
     fn on_pointer_move(&mut self, state: &mut State, _pointer: &PointerData) {
-        state.app_state.tool.active_tool = Tool::Brush;
-        if state.app_state.input.paint_button_down && !state.app_state.input.orbit_modifier && !state.app_state.input.alt {
+        state.app_state.tool_mut().active_tool = Tool::Brush;
+        if state.app_state.input().paint_button_down && !state.app_state.input().orbit_modifier && !state.app_state.input().alt {
             state.paint_at_cursor();
         }
     }
@@ -50,15 +50,15 @@ impl ToolHandler for EraserTool {
     }
 
     fn on_pointer_down(&mut self, state: &mut State, _pointer: &PointerData) {
-        state.app_state.tool.active_tool = Tool::Eraser;
-        if !state.app_state.input.orbit_modifier && !state.app_state.input.alt {
+        state.app_state.tool_mut().active_tool = Tool::Eraser;
+        if !state.app_state.input().orbit_modifier && !state.app_state.input().alt {
             state.paint_at_cursor();
         }
     }
 
     fn on_pointer_move(&mut self, state: &mut State, _pointer: &PointerData) {
-        state.app_state.tool.active_tool = Tool::Eraser;
-        if state.app_state.input.paint_button_down && !state.app_state.input.orbit_modifier && !state.app_state.input.alt {
+        state.app_state.tool_mut().active_tool = Tool::Eraser;
+        if state.app_state.input().paint_button_down && !state.app_state.input().orbit_modifier && !state.app_state.input().alt {
             state.paint_at_cursor();
         }
     }
@@ -91,7 +91,7 @@ impl ToolSystem {
         state: &mut State,
         mut call: impl FnMut(&mut dyn ToolHandler, &mut State) -> R,
     ) -> R {
-        match state.app_state.tool.active_tool {
+        match state.app_state.tool().active_tool {
             Tool::Brush => call(&mut self.brush, state),
             Tool::Eraser => call(&mut self.eraser, state),
         }

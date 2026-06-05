@@ -96,15 +96,15 @@ fn pointer_from_position(
         tilt: None,
         barrel_button: None,
         buttons: PointerButtonSnapshot {
-            primary: state.app_state.input.paint_button_down,
-            secondary: state.app_state.input.pan_button_down,
+            primary: state.app_state.input().paint_button_down,
+            secondary: state.app_state.input().pan_button_down,
             middle: false,
         },
         modifiers: ModifiersSnapshot {
-            ctrl: state.app_state.input.ctrl,
-            cmd: state.app_state.input.cmd,
-            shift: state.app_state.input.shift,
-            alt: state.app_state.input.alt,
+            ctrl: state.app_state.input().ctrl,
+            cmd: state.app_state.input().cmd,
+            shift: state.app_state.input().shift,
+            alt: state.app_state.input().alt,
         },
         hover_state,
         timestamp: std::time::Instant::now(),
@@ -117,22 +117,22 @@ pub fn normalize_window_event(state: &State, event: &WindowEvent) -> Vec<Message
     match event {
         WindowEvent::TouchpadPressure { pressure, stage, .. } => {
             let mut modifiers = ModifiersSnapshot {
-                ctrl: state.app_state.input.ctrl,
-                cmd: state.app_state.input.cmd,
-                shift: state.app_state.input.shift,
-                alt: state.app_state.input.alt,
+                ctrl: state.app_state.input().ctrl,
+                cmd: state.app_state.input().cmd,
+                shift: state.app_state.input().shift,
+                alt: state.app_state.input().alt,
             };
             if *stage <= 0 {
-                modifiers.alt = state.app_state.input.alt;
+                modifiers.alt = state.app_state.input().alt;
             }
             out.push(Message::Input(InputEvent::ModifiersChanged(modifiers)));
             let pressure_pointer = pointer_from_position(
                 state,
-                state.app_state.input.last_mouse_pos,
+                state.app_state.input().last_mouse_pos,
                 glam::Vec2::ZERO,
                 PointerDeviceKind::Trackpad,
                 Some(pressure.clamp(0.0, 1.0) as f32),
-                if state.app_state.input.paint_button_down {
+                if state.app_state.input().paint_button_down {
                     HoverState::Contact
                 } else {
                     HoverState::Hovering
@@ -175,10 +175,10 @@ pub fn normalize_window_event(state: &State, event: &WindowEvent) -> Vec<Message
         WindowEvent::KeyboardInput { event, .. } => {
             if let PhysicalKey::Code(code) = event.physical_key {
                 let modifiers = ModifiersSnapshot {
-                    ctrl: state.app_state.input.ctrl,
-                    cmd: state.app_state.input.cmd,
-                    shift: state.app_state.input.shift,
-                    alt: state.app_state.input.alt,
+                    ctrl: state.app_state.input().ctrl,
+                    cmd: state.app_state.input().cmd,
+                    shift: state.app_state.input().shift,
+                    alt: state.app_state.input().alt,
                 };
                 let input = match event.state {
                     ElementState::Pressed => InputEvent::KeyDown {
@@ -196,7 +196,7 @@ pub fn normalize_window_event(state: &State, event: &WindowEvent) -> Vec<Message
         WindowEvent::MouseInput { state: button_state, button, .. } => {
             let pointer = pointer_from_position(
                 state,
-                state.app_state.input.last_mouse_pos,
+                state.app_state.input().last_mouse_pos,
                 glam::Vec2::ZERO,
                 PointerDeviceKind::Mouse,
                 None,
@@ -218,8 +218,8 @@ pub fn normalize_window_event(state: &State, event: &WindowEvent) -> Vec<Message
         }
         WindowEvent::CursorMoved { position, .. } => {
             let delta = glam::Vec2::new(
-                (position.x - state.app_state.input.last_mouse_pos.x) as f32,
-                (position.y - state.app_state.input.last_mouse_pos.y) as f32,
+                (position.x - state.app_state.input().last_mouse_pos.x) as f32,
+                (position.y - state.app_state.input().last_mouse_pos.y) as f32,
             );
             let pointer = pointer_from_position(
                 state,
@@ -227,7 +227,7 @@ pub fn normalize_window_event(state: &State, event: &WindowEvent) -> Vec<Message
                 delta,
                 PointerDeviceKind::Mouse,
                 None,
-                if state.app_state.input.paint_button_down {
+                if state.app_state.input().paint_button_down {
                     HoverState::Contact
                 } else {
                     HoverState::Hovering
@@ -238,7 +238,7 @@ pub fn normalize_window_event(state: &State, event: &WindowEvent) -> Vec<Message
         WindowEvent::CursorEntered { .. } => {
             let pointer = pointer_from_position(
                 state,
-                state.app_state.input.last_mouse_pos,
+                state.app_state.input().last_mouse_pos,
                 glam::Vec2::ZERO,
                 PointerDeviceKind::Mouse,
                 None,
@@ -249,7 +249,7 @@ pub fn normalize_window_event(state: &State, event: &WindowEvent) -> Vec<Message
         WindowEvent::CursorLeft { .. } => {
             let pointer = pointer_from_position(
                 state,
-                state.app_state.input.last_mouse_pos,
+                state.app_state.input().last_mouse_pos,
                 glam::Vec2::ZERO,
                 PointerDeviceKind::Mouse,
                 None,
@@ -265,10 +265,10 @@ pub fn normalize_window_event(state: &State, event: &WindowEvent) -> Vec<Message
             out.push(Message::Input(InputEvent::Wheel {
                 delta: scroll,
                 modifiers: ModifiersSnapshot {
-                    ctrl: state.app_state.input.ctrl,
-                    cmd: state.app_state.input.cmd,
-                    shift: state.app_state.input.shift,
-                    alt: state.app_state.input.alt,
+                    ctrl: state.app_state.input().ctrl,
+                    cmd: state.app_state.input().cmd,
+                    shift: state.app_state.input().shift,
+                    alt: state.app_state.input().alt,
                 },
             }));
         }

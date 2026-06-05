@@ -586,6 +586,8 @@ impl Painter {
         }
     }
 
+    /// Composites all layers into the final output texture.
+    /// Read-only operation that reads layer properties and renders to GPU.
     pub fn compose_layers(&self, device: &wgpu::Device, queue: &wgpu::Queue) {
         for tile_idx in 0..MAX_UDIMS {
             let mut uniform_data = LayersUniform {
@@ -891,6 +893,8 @@ impl Painter {
         self.compose_layers(device, queue);
     }
 
+    /// Renders a fill layer to its GPU texture with the given parameters.
+    /// Read-only operation that reads layer properties and renders to GPU.
     pub fn render_fill_layer(
         &self,
         device: &wgpu::Device,

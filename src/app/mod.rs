@@ -196,53 +196,17 @@ impl State {
             preferences,
             preferences_path,
             ui_state: ui::TransientUiState::default(),
-            app_state: architecture::state::AppState {
-                document: architecture::state::DocumentState {
-                    active_layer_idx: 0,
-                    layer_count: initial_layer_count,
-                    current_mesh: "Sphere".to_string(),
-                    num_udim_tiles: initial_num_udims,
-                },
-                canvas: architecture::state::CanvasState {
-                    brush_size: 25.0,
-                    brush_color: [220, 50, 50, 255],
-                    brush_hardness: 0.5,
-                    brush_opacity: 1.0,
-                },
-                tool: architecture::state::ToolState {
-                    active_tool: Tool::Brush,
-                },
-                ui: architecture::state::UiState {
-                    show_uv_viewer: false,
-                    uv_viewer_source: 0,
-                    uv_viewer_size: 256.0,
-                    show_uv_wireframe: true,
-                    show_pressure_calibration: false,
-                },
-                history: architecture::state::HistoryState {
-                    undo_len: 0,
-                    redo_len: 0,
-                    undo_stack: Vec::new(),
-                    redo_stack: Vec::new(),
-                },
-                resources: architecture::state::ResourceState {
-                    is_loading_gltf: false,
-                    has_error: false,
-                },
-                input: architecture::state::InputSnapshot {
-                    ctrl: false,
-                    cmd: false,
-                    shift: false,
-                    alt: false,
-                    orbit_modifier: false,
-                    pan_modifier: false,
-                    paint_button_down: false,
-                    pan_button_down: false,
-                    has_tablet_input: false,
-                    pen_pressure: 1.0,
-                    touchpad_pressure_stage: 0,
-                    last_mouse_pos: winit::dpi::PhysicalPosition::new(0.0, 0.0),
-                },
+            app_state: {
+                let mut state = architecture::state::AppState::new();
+                state.document_mut().active_layer_idx = 0;
+                state.document_mut().layer_count = initial_layer_count;
+                state.document_mut().current_mesh = "Sphere".to_string();
+                state.document_mut().num_udim_tiles = initial_num_udims;
+                state.canvas_mut().brush_size = 25.0;
+                state.canvas_mut().brush_color = [220, 50, 50, 255];
+                state.canvas_mut().brush_hardness = 0.5;
+                state.ui_mut().show_uv_wireframe = true;
+                state
             },
         };
 
@@ -273,7 +237,7 @@ impl State {
     }
 
     pub fn calibrated_pressure(&self) -> f32 {
-        let p = self.app_state.input.pen_pressure.clamp(0.0, 1.0);
+        let p = self.app_state.input().pen_pressure.clamp(0.0, 1.0);
         let min_start = self.preferences.pressure_curve_min_start.clamp(0.0, 1.0);
         let max_at = self.preferences.pressure_curve_max_at.clamp(min_start + 0.001, 1.0);
         ((p - min_start) / (max_at - min_start)).clamp(0.0, 1.0)
@@ -289,21 +253,21 @@ impl State {
         }
 
         if binding.primary_mod {
-            if !(self.app_state.input.ctrl || self.app_state.input.cmd) {
+            if !(self.app_state.input().ctrl || self.app_state.input().cmd) {
                 return false;
             }
         }
 
-        if binding.ctrl && !self.app_state.input.ctrl {
+        if binding.ctrl && !self.app_state.input().ctrl {
             return false;
         }
-        if binding.cmd && !self.app_state.input.cmd {
+        if binding.cmd && !self.app_state.input().cmd {
             return false;
         }
-        if binding.alt && !self.app_state.input.alt {
+        if binding.alt && !self.app_state.input().alt {
             return false;
         }
-        if binding.shift && !self.app_state.input.shift {
+        if binding.shift && !self.app_state.input().shift {
             return false;
         }
 
@@ -358,22 +322,22 @@ impl State {
         }
         self.interaction.last_hit_uv = None;
         self.interaction.last_hit_pos = None;
-        self.app_state.input.paint_button_down = false;
-        self.app_state.input.pen_pressure = 1.0;
-        if self.app_state.input.touchpad_pressure_stage <= 0 {
-            self.app_state.input.has_tablet_input = false;
+        self.app_state.input_mut().paint_button_down = false;
+        self.app_state.input_mut().pen_pressure = 1.0;
+        if self.app_state.input_mut().touchpad_pressure_stage <= 0 {
+            self.app_state.input_mut().has_tablet_input = false;
         }
     }
 
     fn sync_app_state_snapshot(&mut self) {
-        self.app_state.document.active_layer_idx = self.painter.active_layer_idx;
-        self.app_state.document.layer_count = self.painter.layers.len();
-        self.app_state.document.num_udim_tiles = self.viewport.document.num_udim_tiles;
+        self.app_state.document_mut().active_layer_idx = self.painter.active_layer_idx;
+        self.app_state.document_mut().layer_count = self.painter.layers.len();
+        self.app_state.document_mut().num_udim_tiles = self.viewport.document.num_udim_tiles;
 
-        self.app_state.history.undo_len = self.app_state.history.undo_stack.len();
-        self.app_state.history.redo_len = self.app_state.history.redo_stack.len();
+        self.app_state.history_mut().undo_len = self.app_state.history().undo_stack.len();
+        self.app_state.history_mut().redo_len = self.app_state.history().redo_stack.len();
 
-        self.app_state.input.pan_modifier = self.app_state.input.alt;
+        self.app_state.input_mut().pan_modifier = self.app_state.input().alt;
     }
 
     fn draw_key_binding_editor(ui: &mut egui::Ui, id: &str, binding: &mut user_preferences::KeyBinding) {
@@ -477,7 +441,6 @@ impl State {
     pub fn update(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         if let Some(ref rx) = self.gltf_rx {
             if let Ok(res) = rx.try_recv() {
-                self.app_state.resources.is_loading_gltf = false;
                 self.gltf_rx = None;
                 self.gltf_loading_status = None;
                 let path = self.loading_path.take().unwrap_or_default();
@@ -485,11 +448,15 @@ impl State {
                     Ok((doc, filename, reprojected_strokes)) => {
                         self.viewport.set_document(doc);
                         self.viewport.update_node_transforms(&self.queue);
-                        self.app_state.document.current_mesh = filename;
                         self.focus_camera_on_model();
-                        self.ui_state.error_details = None;
-                        self.ui_state.error_time = None;
-                        self.app_state.resources.has_error = false;
+                        architecture::reducer::dispatch(
+                            self,
+                            architecture::message::Message::Ui(
+                                architecture::message::UiAction::FinishGltfLoadSuccess {
+                                    filename,
+                                },
+                            ),
+                        );
                         
                         // Assign background reprojected strokes back to layers
                         for (layer_idx, strokes) in reprojected_strokes.into_iter().enumerate() {
@@ -503,16 +470,22 @@ impl State {
                     }
                     Err(e) => {
                         log::error!("Failed to load glTF model: {}", e);
-                        self.ui_state.error_details = Some(LoadError { path, message: e.clone() });
-                        self.ui_state.error_time = Some(std::time::Instant::now());
-                        self.app_state.resources.has_error = true;
+                        architecture::reducer::dispatch(
+                            self,
+                            architecture::message::Message::Ui(
+                                architecture::message::UiAction::FinishGltfLoadError {
+                                    path,
+                                    message: e,
+                                },
+                            ),
+                        );
                     }
                 }
             }
         }
 
         // Spawn/destroy the UV viewer window based on show_uv_viewer flag
-        if self.app_state.ui.show_uv_viewer && self.uv_viewer.is_none() {
+        if self.app_state.ui().show_uv_viewer && self.uv_viewer.is_none() {
             let window = Arc::new(event_loop.create_window(
                 Window::default_attributes()
                     .with_title("UV Viewer")
@@ -586,7 +559,7 @@ impl State {
                 layer_tex_ids,
             });
             log::info!("Opened floatable UV Viewer window.");
-        } else if !self.app_state.ui.show_uv_viewer && self.uv_viewer.is_some() {
+        } else if !self.app_state.ui().show_uv_viewer && self.uv_viewer.is_some() {
             self.uv_viewer = None;
             log::info!("Closed floatable UV Viewer window.");
         }
@@ -598,6 +571,7 @@ impl State {
         self.egui_ctx.begin_pass(egui_input);
 
         let mut close_error = false;
+        let mut dismiss_error_requested = false;
         if let Some(ref err) = self.ui_state.error_details {
             let can_dismiss = self.ui_state.error_time.map_or(true, |t| t.elapsed().as_secs_f32() > 0.3);
             egui::Window::new("Error Loading Model")
@@ -649,18 +623,17 @@ impl State {
                 });
         }
         if close_error {
-            self.ui_state.error_details = None;
-            self.ui_state.error_time = None;
-            self.app_state.resources.has_error = false;
+            dismiss_error_requested = true;
         }
 
         let mut export_requested = false;
-        let mut geometry_to_switch = None;
         let mut gltf_to_load = None;
-        let mut recompute_uv_requested = false;
         let mut save_bindings_requested = false;
         let mut reset_bindings_requested = false;
         let mut pending_ui_actions: Vec<architecture::message::UiAction> = Vec::new();
+        if dismiss_error_requested {
+            pending_ui_actions.push(architecture::message::UiAction::DismissLoadError);
+        }
         let mut pending_tool_selection: Option<architecture::message::ToolKind> = None;
         let mut pending_brush_size: Option<f32> = None;
         let mut pending_brush_hardness: Option<f32> = None;
@@ -695,14 +668,14 @@ impl State {
                 });
 
                 ui.menu_button("Edit", |ui| {
-                    let undo_enabled = !self.app_state.history.undo_stack.is_empty();
+                    let undo_enabled = !self.app_state.history().undo_stack.is_empty();
                     let undo_label = if undo_enabled { "Undo (Ctrl+Z)" } else { "Undo" };
                     if ui.add_enabled(undo_enabled, egui::Button::new(undo_label)).clicked() {
                         pending_ui_actions.push(architecture::message::UiAction::Undo);
                         ui.close();
                     }
                     
-                    let redo_enabled = !self.app_state.history.redo_stack.is_empty();
+                    let redo_enabled = !self.app_state.history().redo_stack.is_empty();
                     let redo_label = if redo_enabled { "Redo (Ctrl+Y)" } else { "Redo" };
                     if ui.add_enabled(redo_enabled, egui::Button::new(redo_label)).clicked() {
                         pending_ui_actions.push(architecture::message::UiAction::Redo);
@@ -711,55 +684,56 @@ impl State {
                 });
 
                 ui.menu_button("Window", |ui| {
-                    if ui.selectable_label(self.app_state.ui.show_uv_viewer, "UV Viewer").clicked() {
+                    if ui.selectable_label(self.app_state.ui().show_uv_viewer, "UV Viewer").clicked() {
                         pending_ui_actions.push(architecture::message::UiAction::SetUvViewerVisible(
-                            !self.app_state.ui.show_uv_viewer,
+                            !self.app_state.ui().show_uv_viewer,
                         ));
                         ui.close();
                     }
                 });
 
                 ui.separator();
-                if ui.selectable_label(self.app_state.ui.show_uv_viewer, "🗺 View UVs").clicked() {
+                if ui.selectable_label(self.app_state.ui().show_uv_viewer, "🗺 View UVs").clicked() {
                     pending_ui_actions.push(architecture::message::UiAction::SetUvViewerVisible(
-                        !self.app_state.ui.show_uv_viewer,
+                        !self.app_state.ui().show_uv_viewer,
                     ));
                 }
 
                 ui.separator();
                 ui.label("Model:");
-                let current_mesh = self.app_state.document.current_mesh.clone();
+                let current_mesh = self.app_state.document().current_mesh.clone();
+                let mut selected_mesh = current_mesh.clone();
                 egui::ComboBox::from_id_salt("mesh_select")
                     .selected_text(&current_mesh)
                     .show_ui(ui, |ui| {
-                        if ui.selectable_value(&mut self.app_state.document.current_mesh, "Sphere".to_string(), "Sphere").changed() {
-                            geometry_to_switch = Some("Sphere");
-                        }
-                        if ui.selectable_value(&mut self.app_state.document.current_mesh, "Cube".to_string(), "Cube").changed() {
-                            geometry_to_switch = Some("Cube");
-                        }
-                        if ui.selectable_value(&mut self.app_state.document.current_mesh, "Plane".to_string(), "Plane").changed() {
-                            geometry_to_switch = Some("Plane");
-                        }
+                        ui.selectable_value(&mut selected_mesh, "Sphere".to_string(), "Sphere");
+                        ui.selectable_value(&mut selected_mesh, "Cube".to_string(), "Cube");
+                        ui.selectable_value(&mut selected_mesh, "Plane".to_string(), "Plane");
                     });
+                if selected_mesh != current_mesh {
+                    pending_ui_actions.push(architecture::message::UiAction::SwitchMesh(selected_mesh));
+                }
 
                 if self.viewport.document.scenes.len() > 1 {
                     ui.separator();
                     ui.label("Scene:");
-                    let active_idx = self.viewport.document.active_scene_idx;
-                    let scene_name = self.viewport.document.scenes[active_idx].name
+                    let active_scene_idx = self.viewport.document.active_scene_idx;
+                    let scene_name = self.viewport.document.scenes[active_scene_idx].name
                         .clone()
-                        .unwrap_or_else(|| format!("Scene {}", active_idx));
+                        .unwrap_or_else(|| format!("Scene {}", active_scene_idx));
+                    let mut selected_scene_idx = active_scene_idx;
                     egui::ComboBox::from_id_salt("scene_select")
                         .selected_text(&scene_name)
                         .show_ui(ui, |ui| {
                             for (idx, _scene) in self.viewport.document.scenes.iter().enumerate() {
                                 let name = _scene.name.clone().unwrap_or_else(|| format!("Scene {}", idx));
-                                if ui.selectable_value(&mut self.viewport.document.active_scene_idx, idx, name).changed() {
-                                    log::info!("Switched active scene to index {}", idx);
-                                }
+                                ui.selectable_value(&mut selected_scene_idx, idx, name);
                             }
                         });
+                    if selected_scene_idx != active_scene_idx {
+                        pending_ui_actions.push(architecture::message::UiAction::SetActiveScene(selected_scene_idx));
+                        log::info!("Switched active scene to index {}", selected_scene_idx);
+                    }
                 }
             });
         });
@@ -776,7 +750,7 @@ impl State {
             ui.separator();
 
             let brush_btn = ui.selectable_label(
-                self.app_state.tool.active_tool == Tool::Brush,
+                self.app_state.tool().active_tool == Tool::Brush,
                 format!("{} Brush", egui_phosphor::regular::PAINT_BRUSH),
             );
             if brush_btn.clicked() {
@@ -784,7 +758,7 @@ impl State {
             }
 
             let eraser_btn = ui.selectable_label(
-                self.app_state.tool.active_tool == Tool::Eraser,
+                self.app_state.tool().active_tool == Tool::Eraser,
                 format!("{} Eraser", egui_phosphor::regular::ERASER),
             );
             if eraser_btn.clicked() {
@@ -807,7 +781,7 @@ impl State {
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label("Size:");
-                        let mut brush_size = self.app_state.canvas.brush_size;
+                        let mut brush_size = self.app_state.canvas().brush_size;
                         if ui
                             .add(egui::Slider::new(&mut brush_size, 2.0..=300.0).text("px"))
                             .changed()
@@ -818,7 +792,7 @@ impl State {
 
                     ui.horizontal(|ui| {
                         ui.label("Hardness:");
-                        let mut brush_hardness = self.app_state.canvas.brush_hardness;
+                        let mut brush_hardness = self.app_state.canvas().brush_hardness;
                         if ui
                             .add(egui::Slider::new(&mut brush_hardness, 0.0..=1.0))
                             .changed()
@@ -829,7 +803,7 @@ impl State {
 
                     ui.horizontal(|ui| {
                         ui.label("Opacity:");
-                        let mut brush_opacity = self.app_state.canvas.brush_opacity;
+                        let mut brush_opacity = self.app_state.canvas().brush_opacity;
                         if ui
                             .add(egui::Slider::new(&mut brush_opacity, 0.0..=1.0))
                             .changed()
@@ -840,17 +814,17 @@ impl State {
 
                     ui.separator();
                     if ui.button("Calibrate Pressure…").clicked() {
-                        self.app_state.ui.show_pressure_calibration = true;
+                        self.app_state.ui_mut().show_pressure_calibration = true;
                     }
 
                     ui.separator();
                     ui.label("Color:");
                     
                     let mut color_f32 = [
-                        self.app_state.canvas.brush_color[0] as f32 / 255.0,
-                        self.app_state.canvas.brush_color[1] as f32 / 255.0,
-                        self.app_state.canvas.brush_color[2] as f32 / 255.0,
-                        self.app_state.canvas.brush_color[3] as f32 / 255.0,
+                        self.app_state.canvas().brush_color[0] as f32 / 255.0,
+                        self.app_state.canvas().brush_color[1] as f32 / 255.0,
+                        self.app_state.canvas().brush_color[2] as f32 / 255.0,
+                        self.app_state.canvas().brush_color[3] as f32 / 255.0,
                     ];
                     
                     if ui.color_edit_button_rgba_unmultiplied(&mut color_f32).changed() {
@@ -1043,78 +1017,90 @@ impl State {
             egui::CollapsingHeader::new("UV Settings")
                 .default_open(false)
                 .show(ui, |ui| {
+                    let mut seams_option = self.import_settings.seams_option;
                     ui.horizontal(|ui| {
                         ui.label("Seams:");
                         egui::ComboBox::from_id_salt("seams_select")
-                            .selected_text(match self.import_settings.seams_option {
+                            .selected_text(match seams_option {
                                 crate::mesh::SeamsOption::GenerateMissing => "Generate Missing",
                                 crate::mesh::SeamsOption::RecomputeAll => "Recompute All",
                             })
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(
-                                    &mut self.import_settings.seams_option,
+                                    &mut seams_option,
                                     crate::mesh::SeamsOption::GenerateMissing,
                                     "Generate Missing",
                                 );
                                 ui.selectable_value(
-                                    &mut self.import_settings.seams_option,
+                                    &mut seams_option,
                                     crate::mesh::SeamsOption::RecomputeAll,
                                     "Recompute All",
                                 );
                             });
                     });
+                    if seams_option != self.import_settings.seams_option {
+                        pending_ui_actions.push(architecture::message::UiAction::SetImportSeams(seams_option));
+                    }
 
+                    let mut margin_size = self.import_settings.margin_size;
                     ui.horizontal(|ui| {
                         ui.label("Margin:");
                         egui::ComboBox::from_id_salt("margin_select")
-                            .selected_text(match self.import_settings.margin_size {
+                            .selected_text(match margin_size {
                                 crate::mesh::MarginSize::Small => "Small",
                                 crate::mesh::MarginSize::Medium => "Medium",
                                 crate::mesh::MarginSize::Large => "Large",
                             })
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(
-                                    &mut self.import_settings.margin_size,
+                                    &mut margin_size,
                                     crate::mesh::MarginSize::Small,
                                     "Small",
                                 );
                                 ui.selectable_value(
-                                    &mut self.import_settings.margin_size,
+                                    &mut margin_size,
                                     crate::mesh::MarginSize::Medium,
                                     "Medium",
                                 );
                                 ui.selectable_value(
-                                    &mut self.import_settings.margin_size,
+                                    &mut margin_size,
                                     crate::mesh::MarginSize::Large,
                                     "Large",
                                 );
                             });
                     });
+                    if margin_size != self.import_settings.margin_size {
+                        pending_ui_actions.push(architecture::message::UiAction::SetImportMargin(margin_size));
+                    }
 
+                    let mut island_orientation = self.import_settings.island_orientation;
                     ui.horizontal(|ui| {
                         ui.label("Orientation:");
                         egui::ComboBox::from_id_salt("orientation_select")
-                            .selected_text(match self.import_settings.island_orientation {
+                            .selected_text(match island_orientation {
                                 crate::mesh::IslandOrientation::AlignWith3DMesh => "Align with 3D Mesh",
                                 crate::mesh::IslandOrientation::Unconstrained => "Unconstrained",
                             })
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(
-                                    &mut self.import_settings.island_orientation,
+                                    &mut island_orientation,
                                     crate::mesh::IslandOrientation::AlignWith3DMesh,
                                     "Align with 3D Mesh",
                                 );
                                 ui.selectable_value(
-                                    &mut self.import_settings.island_orientation,
+                                    &mut island_orientation,
                                     crate::mesh::IslandOrientation::Unconstrained,
                                     "Unconstrained",
                                 );
                             });
                     });
+                    if island_orientation != self.import_settings.island_orientation {
+                        pending_ui_actions.push(architecture::message::UiAction::SetImportOrientation(island_orientation));
+                    }
 
                     ui.add_space(4.0);
                     if ui.button("🔄 Recompute UVs & Reproject Strokes").clicked() {
-                        recompute_uv_requested = true;
+                        pending_ui_actions.push(architecture::message::UiAction::RecomputeUvsAndReproject);
                     }
                 });
 
@@ -1373,10 +1359,6 @@ impl State {
                 architecture::message::Message::Ui(architecture::message::UiAction::SetBrushColor(color)),
             );
         }
-        for action in pending_ui_actions {
-            architecture::reducer::dispatch(self, architecture::message::Message::Ui(action));
-        }
-
         if reset_bindings_requested {
             self.preferences.bindings = user_preferences::InputBindings::default();
             self.save_settings();
@@ -1384,8 +1366,8 @@ impl State {
             self.save_settings();
         }
 
-        if self.app_state.ui.show_pressure_calibration {
-            let mut is_open = self.app_state.ui.show_pressure_calibration;
+        if self.app_state.ui().show_pressure_calibration {
+            let mut is_open = self.app_state.ui().show_pressure_calibration;
             let egui_ctx = self.egui_ctx.clone();
             egui::Window::new("Pressure Calibration")
                 .collapsible(false)
@@ -1415,18 +1397,24 @@ impl State {
                             min_start = (max_at - 0.001).max(0.0);
                         }
                     }
-                    self.preferences.pressure_curve_min_start = min_start;
-                    self.preferences.pressure_curve_max_at = max_at;
+                    if min_start != self.preferences.pressure_curve_min_start
+                        || max_at != self.preferences.pressure_curve_max_at
+                    {
+                        pending_ui_actions.push(architecture::message::UiAction::SetPressureCurve {
+                            min_start,
+                            max_at,
+                        });
+                    }
 
                     let calibrated = self.calibrated_pressure();
                     ui.separator();
                     ui.label(format!(
                         "Current pressure: {:.3} (mapped: {:.3})",
-                        self.app_state.input.pen_pressure,
+                        self.app_state.input().pen_pressure,
                         calibrated
                     ));
-                    if self.app_state.input.touchpad_pressure_stage > 0 {
-                        ui.label(format!("Force click stage: {}", self.app_state.input.touchpad_pressure_stage));
+                    if self.app_state.input().touchpad_pressure_stage > 0 {
+                        ui.label(format!("Force click stage: {}", self.app_state.input().touchpad_pressure_stage));
                     }
 
                     let graph_size = egui::vec2(320.0, 140.0);
@@ -1453,31 +1441,25 @@ impl State {
                     ];
                     painter.add(egui::Shape::line(curve, egui::Stroke::new(2.0, line_color)));
 
-                    let marker = to_screen(self.app_state.input.pen_pressure, calibrated);
+                    let marker = to_screen(self.app_state.input().pen_pressure, calibrated);
                     painter.circle_filled(marker, 4.0, egui::Color32::YELLOW);
                 });
-            self.app_state.ui.show_pressure_calibration = is_open;
+            self.app_state.ui_mut().show_pressure_calibration = is_open;
+        }
+
+        for action in pending_ui_actions {
+            architecture::reducer::dispatch(self, architecture::message::Message::Ui(action));
         }
 
         if export_requested {
             self.export_composite_texture();
         }
 
-        if let Some(mesh_type) = geometry_to_switch {
-            self.push_undo_state();
-            self.toggle_mesh(mesh_type);
-        }
-
         if let Some(path) = gltf_to_load {
             self.load_gltf_file(&path);
         }
 
-        if recompute_uv_requested {
-            self.push_undo_state();
-            self.recompute_and_reproject();
-        }
-
-        if self.app_state.resources.is_loading_gltf {
+        if self.app_state.resources().is_loading_gltf {
             let status_msg = self.gltf_loading_status.as_ref()
                 .and_then(|status| status.lock().ok())
                 .map(|g| g.clone())
@@ -1602,7 +1584,7 @@ impl State {
             viewer.egui_ctx.begin_pass(egui_input);
 
             let num_tiles = self.viewport.document.num_udim_tiles.max(1) as usize;
-            let show_uv_wireframe = self.app_state.ui.show_uv_wireframe;
+            let show_uv_wireframe = self.app_state.ui().show_uv_wireframe;
             let active_nodes = self.viewport.document.get_active_nodes();
 
             #[allow(deprecated)]
@@ -1610,7 +1592,7 @@ impl State {
             ui.horizontal(|ui| {
                 ui.label("Source:");
                 
-                let current_source = self.app_state.ui.uv_viewer_source;
+                let current_source = self.app_state.ui().uv_viewer_source;
                 let mut selected_source = current_source;
                 let source_name = if current_source == 0 {
                     "Composed Result".to_string()
@@ -1642,14 +1624,14 @@ impl State {
                 }
                 
                 ui.add_space(15.0);
-                let mut wireframe = self.app_state.ui.show_uv_wireframe;
+                let mut wireframe = self.app_state.ui().show_uv_wireframe;
                 if ui.checkbox(&mut wireframe, "Show UV Wireframe").changed() {
                     pending_ui_actions.push(architecture::message::UiAction::SetUvWireframe(wireframe));
                 }
                     
                 ui.add_space(20.0);
                 ui.label("Zoom:");
-                let mut uv_size = self.app_state.ui.uv_viewer_size;
+                let mut uv_size = self.app_state.ui().uv_viewer_size;
                 if ui
                     .add(egui::Slider::new(&mut uv_size, 64.0..=512.0).suffix("px"))
                     .changed()
@@ -1666,14 +1648,14 @@ impl State {
                         ui.vertical(|ui| {
                             ui.label(egui::RichText::new(format!("UDIM Tile {} (U: {}..{})", tile_idx, tile_idx, tile_idx + 1)).strong());
                             
-                            let tex_id = if self.app_state.ui.uv_viewer_source == 0 {
+                            let tex_id = if self.app_state.ui().uv_viewer_source == 0 {
                                 if tile_idx < viewer.composite_tex_ids.len() {
                                     Some(viewer.composite_tex_ids[tile_idx])
                                 } else {
                                     None
                                 }
                             } else {
-                                let layer_idx = self.app_state.ui.uv_viewer_source - 1;
+                                let layer_idx = self.app_state.ui().uv_viewer_source - 1;
                                 let global_view_idx = layer_idx * crate::painter::MAX_UDIMS + tile_idx;
                                 if global_view_idx < viewer.layer_tex_ids.len() {
                                     Some(viewer.layer_tex_ids[global_view_idx])
@@ -1683,7 +1665,7 @@ impl State {
                             };
                             
                             if let Some(id) = tex_id {
-                                let img_size = self.app_state.ui.uv_viewer_size;
+                                let img_size = self.app_state.ui().uv_viewer_size;
                                 let response = ui.image((id, egui::vec2(img_size, img_size)));
                                 let rect = response.rect;
                                 
@@ -1840,54 +1822,86 @@ impl State {
 
     pub fn push_undo_state(&mut self) {
         // Clear redo stack when a new action is performed
-        self.app_state.history.redo_stack.clear();
+        self.app_state.history_mut().redo_stack.clear();
         
         let undo_state = architecture::state::UndoState {
             layers: self.painter.layers.clone(),
             active_layer_idx: self.painter.active_layer_idx,
         };
-        self.app_state.history.undo_stack.push(undo_state);
+        self.app_state.history_mut().undo_stack.push(undo_state);
         
-        if self.app_state.history.undo_stack.len() > 50 {
-            self.app_state.history.undo_stack.remove(0);
+        if self.app_state.history().undo_stack.len() > 50 {
+            self.app_state.history_mut().undo_stack.remove(0);
         }
     }
 
     pub fn undo(&mut self) {
-        if let Some(prev_state) = self.app_state.history.undo_stack.pop() {
+        if let Some(prev_state) = self.app_state.history_mut().undo_stack.pop() {
             let current_state = architecture::state::UndoState {
                 layers: self.painter.layers.clone(),
                 active_layer_idx: self.painter.active_layer_idx,
             };
-            self.app_state.history.redo_stack.push(current_state);
+            self.app_state.history_mut().redo_stack.push(current_state);
             
             self.painter.layers = prev_state.layers;
             self.painter.active_layer_idx = prev_state.active_layer_idx;
             
             self.painter.redraw_all_layers(&self.device, &self.queue, &self.viewport.document);
-            log::info!("Performed Undo. Undo stack size: {}, Redo stack size: {}", self.app_state.history.undo_stack.len(), self.app_state.history.redo_stack.len());
+            log::info!("Performed Undo. Undo stack size: {}, Redo stack size: {}", self.app_state.history().undo_stack.len(), self.app_state.history().redo_stack.len());
         } else {
             log::info!("Nothing to undo");
         }
     }
 
     pub fn redo(&mut self) {
-        if let Some(next_state) = self.app_state.history.redo_stack.pop() {
+        if let Some(next_state) = self.app_state.history_mut().redo_stack.pop() {
             let current_state = architecture::state::UndoState {
                 layers: self.painter.layers.clone(),
                 active_layer_idx: self.painter.active_layer_idx,
             };
-            self.app_state.history.undo_stack.push(current_state);
+            self.app_state.history_mut().undo_stack.push(current_state);
             
             self.painter.layers = next_state.layers;
             self.painter.active_layer_idx = next_state.active_layer_idx;
             
             self.painter.redraw_all_layers(&self.device, &self.queue, &self.viewport.document);
-            log::info!("Performed Redo. Undo stack size: {}, Redo stack size: {}", self.app_state.history.undo_stack.len(), self.app_state.history.redo_stack.len());
+            log::info!("Performed Redo. Undo stack size: {}, Redo stack size: {}", self.app_state.history().undo_stack.len(), self.app_state.history().redo_stack.len());
         } else {
             log::info!("Nothing to redo");
         }
     }
+}
+
+/// Re-renders a fill layer's GPU texture. Read-only operation with rendering side effects.
+pub fn rerender_fill_layer(state: &State, idx: usize) {
+    if idx >= state.painter.layers.len() || !state.painter.layers[idx].is_fill {
+        return;
+    }
+
+    let layer = &state.painter.layers[idx];
+    let base = [
+        layer.fill_color[0] as f32 / 255.0,
+        layer.fill_color[1] as f32 / 255.0,
+        layer.fill_color[2] as f32 / 255.0,
+        layer.fill_color[3] as f32 / 255.0,
+    ];
+    let noise = [
+        layer.fill_noise_color[0] as f32 / 255.0,
+        layer.fill_noise_color[1] as f32 / 255.0,
+        layer.fill_noise_color[2] as f32 / 255.0,
+        layer.fill_noise_color[3] as f32 / 255.0,
+    ];
+    state.painter.render_fill_layer(
+        &state.device,
+        &state.queue,
+        idx,
+        base,
+        noise,
+        layer.fill_noise_scale,
+        layer.fill_projection_mode,
+        &state.viewport.document,
+    );
+    state.painter.compose_layers(&state.device, &state.queue);
 }
 
 pub struct UvViewerWindow {

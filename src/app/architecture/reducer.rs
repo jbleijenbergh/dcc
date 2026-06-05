@@ -3,6 +3,7 @@ use std::sync::OnceLock;
 use super::input::{InputEvent, ModifiersSnapshot, PointerData};
 use super::message::{DocumentCommand, Message, ToolKind, UiAction};
 use super::tool::ToolSystem;
+use super::super::rerender_fill_layer;
 use crate::app::types::Tool;
 use crate::app::State;
 
@@ -14,16 +15,16 @@ fn tool_system() -> &'static std::sync::Mutex<ToolSystem> {
 fn update_modifier_state(state: &mut State, key: winit::keyboard::KeyCode, is_pressed: bool) {
     use winit::keyboard::KeyCode;
     match key {
-        KeyCode::ControlLeft | KeyCode::ControlRight => state.app_state.input.ctrl = is_pressed,
-        KeyCode::SuperLeft | KeyCode::SuperRight => state.app_state.input.cmd = is_pressed,
-        KeyCode::ShiftLeft | KeyCode::ShiftRight => state.app_state.input.shift = is_pressed,
-        KeyCode::AltLeft | KeyCode::AltRight => state.app_state.input.alt = is_pressed,
+        KeyCode::ControlLeft | KeyCode::ControlRight => state.app_state.input_mut().ctrl = is_pressed,
+        KeyCode::SuperLeft | KeyCode::SuperRight => state.app_state.input_mut().cmd = is_pressed,
+        KeyCode::ShiftLeft | KeyCode::ShiftRight => state.app_state.input_mut().shift = is_pressed,
+        KeyCode::AltLeft | KeyCode::AltRight => state.app_state.input_mut().alt = is_pressed,
         _ => {}
     }
 }
 
 fn update_mouse_position(state: &mut State, pointer: &PointerData) {
-    state.app_state.input.last_mouse_pos = winit::dpi::PhysicalPosition::new(
+    state.app_state.input_mut().last_mouse_pos = winit::dpi::PhysicalPosition::new(
         pointer.screen_position.x as f64,
         pointer.screen_position.y as f64,
     );
@@ -31,8 +32,8 @@ fn update_mouse_position(state: &mut State, pointer: &PointerData) {
 
 fn apply_pointer_pressure(state: &mut State, pointer: &PointerData) {
     if let Some(pressure) = pointer.pressure {
-        state.app_state.input.has_tablet_input = true;
-        state.app_state.input.pen_pressure = pressure.clamp(0.0, 1.0);
+        state.app_state.input_mut().has_tablet_input = true;
+        state.app_state.input_mut().pen_pressure = pressure.clamp(0.0, 1.0);
     }
 }
 
@@ -82,11 +83,11 @@ fn apply_key_action(state: &mut State, key: winit::keyboard::KeyCode, pressed: b
         return true;
     }
     if state.binding_matches_key(&state.preferences.bindings.brush_size_down, key) {
-        state.app_state.canvas.brush_size = (state.app_state.canvas.brush_size - 5.0).max(2.0);
+        state.app_state.canvas_mut().brush_size = (state.app_state.canvas().brush_size - 5.0).max(2.0);
         return true;
     }
     if state.binding_matches_key(&state.preferences.bindings.brush_size_up, key) {
-        state.app_state.canvas.brush_size = (state.app_state.canvas.brush_size + 5.0).min(300.0);
+        state.app_state.canvas_mut().brush_size = (state.app_state.canvas().brush_size + 5.0).min(300.0);
         return true;
     }
     if state.binding_matches_key(&state.preferences.bindings.clear_canvas, key) {
@@ -95,11 +96,11 @@ fn apply_key_action(state: &mut State, key: winit::keyboard::KeyCode, pressed: b
         return true;
     }
     if state.binding_matches_key(&state.preferences.bindings.tool_brush, key) {
-        state.app_state.tool.active_tool = Tool::Brush;
+        state.app_state.tool_mut().active_tool = Tool::Brush;
         return true;
     }
     if state.binding_matches_key(&state.preferences.bindings.tool_eraser, key) {
-        state.app_state.tool.active_tool = Tool::Eraser;
+        state.app_state.tool_mut().active_tool = Tool::Eraser;
         return true;
     }
 
@@ -107,41 +108,10 @@ fn apply_key_action(state: &mut State, key: winit::keyboard::KeyCode, pressed: b
 }
 
 fn apply_modifiers_snapshot(state: &mut State, modifiers: ModifiersSnapshot) {
-    state.app_state.input.ctrl = modifiers.ctrl;
-    state.app_state.input.cmd = modifiers.cmd;
-    state.app_state.input.shift = modifiers.shift;
-    state.app_state.input.alt = modifiers.alt;
-}
-
-fn rerender_fill_layer(state: &mut State, idx: usize) {
-    if idx >= state.painter.layers.len() || !state.painter.layers[idx].is_fill {
-        return;
-    }
-
-    let layer = &state.painter.layers[idx];
-    let base = [
-        layer.fill_color[0] as f32 / 255.0,
-        layer.fill_color[1] as f32 / 255.0,
-        layer.fill_color[2] as f32 / 255.0,
-        layer.fill_color[3] as f32 / 255.0,
-    ];
-    let noise = [
-        layer.fill_noise_color[0] as f32 / 255.0,
-        layer.fill_noise_color[1] as f32 / 255.0,
-        layer.fill_noise_color[2] as f32 / 255.0,
-        layer.fill_noise_color[3] as f32 / 255.0,
-    ];
-    state.painter.render_fill_layer(
-        &state.device,
-        &state.queue,
-        idx,
-        base,
-        noise,
-        layer.fill_noise_scale,
-        layer.fill_projection_mode,
-        &state.viewport.document,
-    );
-    state.painter.compose_layers(&state.device, &state.queue);
+    state.app_state.input_mut().ctrl = modifiers.ctrl;
+    state.app_state.input_mut().cmd = modifiers.cmd;
+    state.app_state.input_mut().shift = modifiers.shift;
+    state.app_state.input_mut().alt = modifiers.alt;
 }
 
 pub fn dispatch(state: &mut State, message: Message) -> bool {
@@ -155,8 +125,8 @@ pub fn dispatch(state: &mut State, message: Message) -> bool {
                     &state.preferences.bindings.paint_button,
                     winit::event::MouseButton::Left,
                 ) {
-                    state.app_state.input.paint_button_down = true;
-                    if !state.app_state.input.orbit_modifier && !state.app_state.input.alt {
+                    state.app_state.input_mut().paint_button_down = true;
+                    if !state.app_state.input().orbit_modifier && !state.app_state.input().alt {
                         apply_tool_pointer_down(state, &pointer);
                     }
                     return true;
@@ -169,8 +139,8 @@ pub fn dispatch(state: &mut State, message: Message) -> bool {
                 update_mouse_position(state, &pointer);
                 apply_pointer_pressure(state, &pointer);
 
-                if state.app_state.input.paint_button_down {
-                    if state.app_state.input.orbit_modifier || state.app_state.input.alt {
+                if state.app_state.input().paint_button_down {
+                    if state.app_state.input().orbit_modifier || state.app_state.input().alt {
                         state.viewport.camera.yaw -= (dx * 0.005) as f32;
                         state.viewport.camera.pitch =
                             (state.viewport.camera.pitch + (dy * 0.005) as f32).clamp(
@@ -185,7 +155,7 @@ pub fn dispatch(state: &mut State, message: Message) -> bool {
                     return true;
                 }
 
-                if state.app_state.input.pan_button_down {
+                if state.app_state.input().pan_button_down {
                     let eye = state.viewport.camera.get_eye();
                     let forward = (state.viewport.camera.target - eye).normalize();
                     let right = forward.cross(glam::Vec3::Y).normalize();
@@ -201,19 +171,19 @@ pub fn dispatch(state: &mut State, message: Message) -> bool {
             }
             InputEvent::PointerUp(pointer) => {
                 update_mouse_position(state, &pointer);
-                state.app_state.input.paint_button_down = false;
+                state.app_state.input_mut().paint_button_down = false;
                 state.interaction.last_hit_uv = None;
                 state.interaction.last_hit_pos = None;
-                state.app_state.input.pen_pressure = 1.0;
-                if state.app_state.input.touchpad_pressure_stage <= 0 {
-                    state.app_state.input.has_tablet_input = false;
+                state.app_state.input_mut().pen_pressure = 1.0;
+                if state.app_state.input().touchpad_pressure_stage <= 0 {
+                    state.app_state.input_mut().has_tablet_input = false;
                 }
                 apply_tool_pointer_up(state, &pointer);
                 true
             }
             InputEvent::PointerCancel(pointer) => {
                 update_mouse_position(state, &pointer);
-                state.app_state.input.paint_button_down = false;
+                state.app_state.input_mut().paint_button_down = false;
                 state.interaction.last_hit_uv = None;
                 state.interaction.last_hit_pos = None;
                 apply_tool_pointer_cancel(state, &pointer);
@@ -237,11 +207,11 @@ pub fn dispatch(state: &mut State, message: Message) -> bool {
                 update_modifier_state(state, key, true);
 
                 if state.binding_matches_key(&state.preferences.bindings.orbit_modifier, key) {
-                    state.app_state.input.orbit_modifier = true;
+                    state.app_state.input_mut().orbit_modifier = true;
                     return true;
                 }
                 if state.binding_matches_key(&state.preferences.bindings.pan_modifier, key) {
-                    state.app_state.input.alt = true;
+                    state.app_state.input_mut().alt = true;
                     return true;
                 }
 
@@ -251,11 +221,11 @@ pub fn dispatch(state: &mut State, message: Message) -> bool {
                 update_modifier_state(state, key, false);
 
                 if state.binding_matches_key(&state.preferences.bindings.orbit_modifier, key) {
-                    state.app_state.input.orbit_modifier = false;
+                    state.app_state.input_mut().orbit_modifier = false;
                     return true;
                 }
                 if state.binding_matches_key(&state.preferences.bindings.pan_modifier, key) {
-                    state.app_state.input.alt = false;
+                    state.app_state.input_mut().alt = false;
                     return true;
                 }
 
@@ -269,37 +239,91 @@ pub fn dispatch(state: &mut State, message: Message) -> bool {
         Message::Ui(action) => {
             match action {
                 UiAction::SelectTool(tool) => {
-                    state.app_state.tool.active_tool = match tool {
+                    state.app_state.tool_mut().active_tool = match tool {
                         ToolKind::Brush => Tool::Brush,
                         ToolKind::Eraser => Tool::Eraser,
                     };
                 }
                 UiAction::AdjustBrushSize(delta) => {
-                    state.app_state.canvas.brush_size = (state.app_state.canvas.brush_size + delta).clamp(2.0, 300.0);
+                    state.app_state.canvas_mut().brush_size = (state.app_state.canvas().brush_size + delta).clamp(2.0, 300.0);
                 }
                 UiAction::SetBrushSize(size) => {
-                    state.app_state.canvas.brush_size = size.clamp(2.0, 300.0);
+                    state.app_state.canvas_mut().brush_size = size.clamp(2.0, 300.0);
                 }
                 UiAction::SetBrushHardness(hardness) => {
-                    state.app_state.canvas.brush_hardness = hardness.clamp(0.0, 1.0);
+                    state.app_state.canvas_mut().brush_hardness = hardness.clamp(0.0, 1.0);
                 }
                 UiAction::SetBrushOpacity(opacity) => {
-                    state.app_state.canvas.brush_opacity = opacity.clamp(0.0, 1.0);
+                    state.app_state.canvas_mut().brush_opacity = opacity.clamp(0.0, 1.0);
                 }
                 UiAction::SetBrushColor(color) => {
-                    state.app_state.canvas.brush_color = color;
+                    state.app_state.canvas_mut().brush_color = color;
                 }
                 UiAction::SetUvViewerVisible(visible) => {
-                    state.app_state.ui.show_uv_viewer = visible;
+                    state.app_state.ui_mut().show_uv_viewer = visible;
                 }
                 UiAction::SetUvViewerSource(source) => {
-                    state.app_state.ui.uv_viewer_source = source;
+                    state.app_state.ui_mut().uv_viewer_source = source;
                 }
                 UiAction::SetUvViewerSize(size) => {
-                    state.app_state.ui.uv_viewer_size = size.clamp(64.0, 512.0);
+                    state.app_state.ui_mut().uv_viewer_size = size.clamp(64.0, 512.0);
                 }
                 UiAction::SetUvWireframe(show) => {
-                    state.app_state.ui.show_uv_wireframe = show;
+                    state.app_state.ui_mut().show_uv_wireframe = show;
+                }
+                UiAction::SwitchMesh(mesh) => {
+                    state.push_undo_state();
+                    state.toggle_mesh(&mesh);
+                    state.app_state.document_mut().current_mesh = mesh;
+                }
+                UiAction::SetCurrentMesh(mesh) => {
+                    state.app_state.document_mut().current_mesh = mesh;
+                }
+                UiAction::SetActiveScene(scene_idx) => {
+                    if scene_idx < state.viewport.document.scenes.len() {
+                        state.viewport.document.active_scene_idx = scene_idx;
+                    }
+                }
+                UiAction::SetImportSeams(seams) => {
+                    state.import_settings.seams_option = seams;
+                }
+                UiAction::SetImportMargin(margin) => {
+                    state.import_settings.margin_size = margin;
+                }
+                UiAction::SetImportOrientation(orientation) => {
+                    state.import_settings.island_orientation = orientation;
+                }
+                UiAction::RecomputeUvsAndReproject => {
+                    state.push_undo_state();
+                    state.recompute_and_reproject();
+                }
+                UiAction::SetPressureCurve { min_start, max_at } => {
+                    let clamped_min = min_start.clamp(0.0, 1.0);
+                    let clamped_max = max_at.clamp(clamped_min + 0.001, 1.0);
+                    state.preferences.pressure_curve_min_start = clamped_min;
+                    state.preferences.pressure_curve_max_at = clamped_max;
+                }
+                UiAction::StartGltfLoad => {
+                    state.app_state.resources_mut().is_loading_gltf = true;
+                    state.app_state.resources_mut().has_error = false;
+                }
+                UiAction::FinishGltfLoadSuccess { filename } => {
+                    state.app_state.resources_mut().is_loading_gltf = false;
+                    state.app_state.resources_mut().has_error = false;
+                    state.app_state.document_mut().current_mesh = filename;
+                    state.ui_state.error_details = None;
+                    state.ui_state.error_time = None;
+                }
+                UiAction::FinishGltfLoadError { path, message } => {
+                    state.app_state.resources_mut().is_loading_gltf = false;
+                    state.app_state.resources_mut().has_error = true;
+                    state.ui_state.error_details = Some(crate::app::LoadError { path, message });
+                    state.ui_state.error_time = Some(std::time::Instant::now());
+                }
+                UiAction::DismissLoadError => {
+                    state.ui_state.error_details = None;
+                    state.ui_state.error_time = None;
+                    state.app_state.resources_mut().has_error = false;
                 }
                 UiAction::SelectLayer(idx) => {
                     if idx < state.painter.layers.len() {
