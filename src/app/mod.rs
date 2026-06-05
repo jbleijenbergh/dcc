@@ -1,13 +1,18 @@
 mod ui;
 mod actions;
 mod types;
+mod settings;
 
 pub use types::{Tool, SurfaceError, LoadError};
 
+use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use winit::event::WindowEvent;
+use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::Window;
 use crate::painter::BlendMode;
+use settings::{AppSettings, KEY_CHOICES, MOUSE_BUTTON_CHOICES, parse_key_code, parse_mouse_button};
 
 pub struct State {
     surface: wgpu::Surface<'static>,
@@ -55,6 +60,7 @@ pub struct State {
     redo_stack: Vec<UndoState>,
     is_ctrl_pressed: bool,
     is_cmd_pressed: bool,
+    is_shift_pressed: bool,
 
     // Camera movement/interaction mouse state
     is_left_clicked: bool,
@@ -88,6 +94,10 @@ pub struct State {
     error_time: Option<std::time::Instant>,
     loading_path: Option<std::path::PathBuf>,
     supported_present_modes: Vec<wgpu::PresentMode>,
+
+    settings: AppSettings,
+    settings_path: PathBuf,
+    settings_feedback: Option<String>,
 }
 
 impl State {
@@ -189,7 +199,9 @@ impl State {
             },
         );
 
-        Ok(Self {
+        let (settings, settings_path) = AppSettings::load_or_default();
+
+        let state = Self {
             window,
             surface,
             device,
@@ -221,6 +233,7 @@ impl State {
             redo_stack: Vec::new(),
             is_ctrl_pressed: false,
             is_cmd_pressed: false,
+            is_shift_pressed: false,
             is_left_clicked: false,
             is_right_clicked: false,
             last_mouse_pos: winit::dpi::PhysicalPosition::new(0.0, 0.0),
@@ -247,7 +260,19 @@ impl State {
             error_time: None,
             loading_path: None,
             supported_present_modes: surface_caps.present_modes,
-        })
+
+            settings,
+            settings_path,
+            settings_feedback: None,
+        };
+
+        if !state.settings_path.exists() {
+            if let Err(e) = state.settings.save_to(&state.settings_path) {
+                log::warn!("Failed to create default settings file: {}", e);
+            }
+        }
+
+        Ok(state)
     }
 
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
@@ -274,24 +299,82 @@ impl State {
         ((p - min_start) / (max_at - min_start)).clamp(0.0, 1.0)
     }
 
-    pub fn input(&mut self, event: &WindowEvent) -> bool {
-        if let WindowEvent::MouseInput { state: winit::event::ElementState::Released, button: winit::event::MouseButton::Left, .. } = event {
-            if let Some(stroke) = self.current_stroke.take() {
-                let active = self.painter.active_layer_idx;
-                if active < self.painter.layers.len() && !self.painter.layers[active].is_fill {
-                    self.push_undo_state();
-                    self.painter.layers[active].strokes.push(stroke);
-                    log::info!("Committed stroke to layer {}, total strokes: {}",
-                        self.painter.layers[active].name,
-                        self.painter.layers[active].strokes.len());
-                }
+    fn binding_matches_key(&self, binding: &settings::KeyBinding, key: KeyCode) -> bool {
+        let Some(expected) = parse_key_code(&binding.key) else {
+            return false;
+        };
+
+        if expected != key {
+            return false;
+        }
+
+        if binding.primary_mod {
+            if !(self.is_ctrl_pressed || self.is_cmd_pressed) {
+                return false;
             }
-            self.last_hit_uv = None;
-            self.last_hit_pos = None;
-            self.is_left_clicked = false;
-            self.pen_pressure = 1.0;
-            if self.touchpad_pressure_stage <= 0 {
-                self.has_tablet_input = false;
+        }
+
+        if binding.ctrl && !self.is_ctrl_pressed {
+            return false;
+        }
+        if binding.cmd && !self.is_cmd_pressed {
+            return false;
+        }
+        if binding.alt && !self.is_alt_pressed {
+            return false;
+        }
+        if binding.shift && !self.is_shift_pressed {
+            return false;
+        }
+
+        true
+    }
+
+    fn binding_matches_mouse(&self, binding: &settings::MouseBinding, button: winit::event::MouseButton) -> bool {
+        parse_mouse_button(&binding.button).map_or(false, |expected| expected == button)
+    }
+
+    fn save_settings(&mut self) {
+        log::debug!("Saving bindings to {}", self.settings_path.display());
+        match self.settings.save_to(&self.settings_path) {
+            Ok(()) => {
+                let feedback = format!("Saved settings to {}", self.settings_path.display());
+                log::debug!("Bindings saved successfully: orbit_mod={}, pan_mod={}, undo={}, redo={}",
+                    self.settings.bindings.orbit_modifier.key,
+                    self.settings.bindings.pan_modifier.key,
+                    self.settings.bindings.undo.key,
+                    self.settings.bindings.redo.key);
+                self.settings_feedback = Some(feedback);
+            }
+            Err(e) => {
+                self.settings_feedback = Some(format!("Failed to save settings: {}", e));
+                log::error!("Failed to save bindings to {}: {}", self.settings_path.display(), e);
+            }
+        }
+    }
+
+    pub fn input(&mut self, event: &WindowEvent) -> bool {
+        if let WindowEvent::MouseInput { state: winit::event::ElementState::Released, button, .. } = event {
+            if self.binding_matches_mouse(&self.settings.bindings.paint_button, *button) {
+                if let Some(stroke) = self.current_stroke.take() {
+                    let active = self.painter.active_layer_idx;
+                    if active < self.painter.layers.len() && !self.painter.layers[active].is_fill {
+                        self.push_undo_state();
+                        self.painter.layers[active].strokes.push(stroke);
+                        log::info!(
+                            "Committed stroke to layer {}, total strokes: {}",
+                            self.painter.layers[active].name,
+                            self.painter.layers[active].strokes.len()
+                        );
+                    }
+                }
+                self.last_hit_uv = None;
+                self.last_hit_pos = None;
+                self.is_left_clicked = false;
+                self.pen_pressure = 1.0;
+                if self.touchpad_pressure_stage <= 0 {
+                    self.has_tablet_input = false;
+                }
             }
         }
 
@@ -300,13 +383,10 @@ impl State {
             return true;
         }
 
-        // Handle tablet/touch input with pressure
         if let WindowEvent::Touch(touch) = event {
             use winit::event::TouchPhase;
-            
+
             self.has_tablet_input = true;
-            
-            // Extract pressure from force data
             self.pen_pressure = match touch.force {
                 Some(winit::event::Force::Normalized(pressure)) => pressure as f32,
                 Some(winit::event::Force::Calibrated { force, max_possible_force, .. }) => {
@@ -314,13 +394,8 @@ impl State {
                 }
                 None => 1.0,
             };
-            
-            // Update cursor position from touch location
             self.last_mouse_pos = touch.location;
-            
-            log::debug!("Touch input: pressure={:.3}, phase={:?}", self.pen_pressure, touch.phase);
-            
-            // Handle touch phases similar to mouse
+
             match touch.phase {
                 TouchPhase::Started => {
                     if !self.egui_ctx.egui_wants_pointer_input() {
@@ -337,9 +412,11 @@ impl State {
                         if active < self.painter.layers.len() && !self.painter.layers[active].is_fill {
                             self.push_undo_state();
                             self.painter.layers[active].strokes.push(stroke);
-                            log::info!("Committed touch stroke to layer {}, total strokes: {}",
+                            log::info!(
+                                "Committed touch stroke to layer {}, total strokes: {}",
                                 self.painter.layers[active].name,
-                                self.painter.layers[active].strokes.len());
+                                self.painter.layers[active].strokes.len()
+                            );
                         }
                     }
                     self.last_hit_uv = None;
@@ -373,20 +450,11 @@ impl State {
                     self.has_tablet_input = false;
                 }
             }
-            log::debug!(
-                "Touchpad pressure: pressure={:.3}, stage={}",
-                self.pen_pressure,
-                self.touchpad_pressure_stage
-            );
         }
 
         match event {
             WindowEvent::KeyboardInput {
-                event: winit::event::KeyEvent {
-                    physical_key,
-                    state,
-                    ..
-                },
+                event: winit::event::KeyEvent { physical_key, state, .. },
                 ..
             } => {
                 if self.egui_ctx.egui_wants_keyboard_input() {
@@ -395,66 +463,61 @@ impl State {
 
                 let pressed = *state == winit::event::ElementState::Pressed;
                 match physical_key {
-                    winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::Space) => {
-                        self.is_space_pressed = pressed;
-                        true
-                    }
-                    winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::AltLeft) |
-                    winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::AltRight) => {
-                        self.is_alt_pressed = pressed;
-                        true
-                    }
-                    winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::ControlLeft) |
-                    winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::ControlRight) => {
-                        self.is_ctrl_pressed = pressed;
-                        true
-                    }
-                    winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::SuperLeft) |
-                    winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::SuperRight) => {
-                        self.is_cmd_pressed = pressed;
-                        true
-                    }
-                    winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyZ) => {
+                    PhysicalKey::Code(code) => {
+                        match code {
+                            KeyCode::ControlLeft | KeyCode::ControlRight => self.is_ctrl_pressed = pressed,
+                            KeyCode::SuperLeft | KeyCode::SuperRight => self.is_cmd_pressed = pressed,
+                            KeyCode::ShiftLeft | KeyCode::ShiftRight => self.is_shift_pressed = pressed,
+                            KeyCode::AltLeft | KeyCode::AltRight => self.is_alt_pressed = pressed,
+                            _ => {}
+                        }
+
+                        if self.binding_matches_key(&self.settings.bindings.orbit_modifier, *code) {
+                            self.is_space_pressed = pressed;
+                            return true;
+                        }
+
+                        if self.binding_matches_key(&self.settings.bindings.pan_modifier, *code) {
+                            self.is_alt_pressed = pressed;
+                            return true;
+                        }
+
                         if pressed {
-                            let modifier = self.is_ctrl_pressed || self.is_cmd_pressed;
-                            if modifier {
+                            if self.binding_matches_key(&self.settings.bindings.undo, *code) {
                                 self.undo();
                                 return true;
                             }
-                        }
-                        false
-                    }
-                    winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyY) => {
-                        if pressed {
-                            let modifier = self.is_ctrl_pressed || self.is_cmd_pressed;
-                            if modifier {
+                            if self.binding_matches_key(&self.settings.bindings.redo, *code) {
                                 self.redo();
                                 return true;
                             }
+                            if self.binding_matches_key(&self.settings.bindings.brush_size_down, *code) {
+                                self.brush_size = (self.brush_size - 5.0).max(2.0);
+                                log::info!("Brush size: {}", self.brush_size);
+                                return true;
+                            }
+                            if self.binding_matches_key(&self.settings.bindings.brush_size_up, *code) {
+                                self.brush_size = (self.brush_size + 5.0).min(300.0);
+                                log::info!("Brush size: {}", self.brush_size);
+                                return true;
+                            }
+                            if self.binding_matches_key(&self.settings.bindings.clear_canvas, *code) {
+                                self.push_undo_state();
+                                self.painter.clear_all_layers(&self.device, &self.queue);
+                                log::info!("Cleared canvas");
+                                return true;
+                            }
+                            if self.binding_matches_key(&self.settings.bindings.tool_brush, *code) {
+                                self.active_tool = Tool::Brush;
+                                return true;
+                            }
+                            if self.binding_matches_key(&self.settings.bindings.tool_eraser, *code) {
+                                self.active_tool = Tool::Eraser;
+                                return true;
+                            }
                         }
+
                         false
-                    }
-                    winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::BracketLeft) => {
-                        if pressed {
-                            self.brush_size = (self.brush_size - 5.0).max(2.0);
-                            log::info!("Brush size: {}", self.brush_size);
-                        }
-                        true
-                    }
-                    winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::BracketRight) => {
-                        if pressed {
-                            self.brush_size = (self.brush_size + 5.0).min(300.0);
-                            log::info!("Brush size: {}", self.brush_size);
-                        }
-                        true
-                    }
-                    winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyC) => {
-                        if pressed {
-                            self.push_undo_state();
-                            self.painter.clear_all_layers(&self.device, &self.queue);
-                            log::info!("Cleared canvas");
-                        }
-                        true
                     }
                     _ => false,
                 }
@@ -465,24 +528,20 @@ impl State {
                 }
 
                 let pressed = *state == winit::event::ElementState::Pressed;
-                match button {
-                    winit::event::MouseButton::Left => {
-                        self.is_left_clicked = pressed;
-                        if !pressed {
-                            self.last_hit_uv = None;
-                            self.last_hit_pos = None;
-                        } else {
-                            if !self.is_space_pressed && !self.is_alt_pressed {
-                                self.paint_at_cursor();
-                            }
-                        }
-                        true
+                if self.binding_matches_mouse(&self.settings.bindings.paint_button, *button) {
+                    self.is_left_clicked = pressed;
+                    if !pressed {
+                        self.last_hit_uv = None;
+                        self.last_hit_pos = None;
+                    } else if !self.is_space_pressed && !self.is_alt_pressed {
+                        self.paint_at_cursor();
                     }
-                    winit::event::MouseButton::Right => {
-                        self.is_right_clicked = pressed;
-                        true
-                    }
-                    _ => false,
+                    true
+                } else if self.binding_matches_mouse(&self.settings.bindings.pan_button, *button) {
+                    self.is_right_clicked = pressed;
+                    true
+                } else {
+                    false
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -536,6 +595,104 @@ impl State {
             }
             _ => false,
         }
+    }
+
+    fn draw_key_binding_editor(ui: &mut egui::Ui, id: &str, binding: &mut settings::KeyBinding) {
+        ui.horizontal(|ui| {
+            ui.label("Key");
+            egui::ComboBox::from_id_salt(id)
+                .selected_text(&binding.key)
+                .show_ui(ui, |ui| {
+                    for key in KEY_CHOICES {
+                        ui.selectable_value(&mut binding.key, (*key).to_string(), *key);
+                    }
+                });
+        });
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut binding.primary_mod, "Primary Mod (Ctrl/Cmd)");
+            ui.checkbox(&mut binding.ctrl, "Ctrl");
+            ui.checkbox(&mut binding.cmd, "Cmd");
+            ui.checkbox(&mut binding.alt, "Alt");
+            ui.checkbox(&mut binding.shift, "Shift");
+        });
+    }
+
+    fn draw_mouse_binding_editor(ui: &mut egui::Ui, id: &str, binding: &mut settings::MouseBinding) {
+        ui.horizontal(|ui| {
+            ui.label("Button");
+            egui::ComboBox::from_id_salt(id)
+                .selected_text(&binding.button)
+                .show_ui(ui, |ui| {
+                    for button in MOUSE_BUTTON_CHOICES {
+                        ui.selectable_value(&mut binding.button, (*button).to_string(), *button);
+                    }
+                });
+        });
+    }
+
+    fn key_binding_signature(binding: &settings::KeyBinding) -> String {
+        let mut parts: Vec<&str> = Vec::new();
+        if binding.primary_mod {
+            parts.push("PrimaryMod");
+        }
+        if binding.ctrl {
+            parts.push("Ctrl");
+        }
+        if binding.cmd {
+            parts.push("Cmd");
+        }
+        if binding.alt {
+            parts.push("Alt");
+        }
+        if binding.shift {
+            parts.push("Shift");
+        }
+        parts.push(&binding.key);
+        parts.join("+")
+    }
+
+    fn binding_conflicts(bindings: &settings::InputBindings) -> Vec<String> {
+        let key_bindings = [
+            ("Orbit Modifier", &bindings.orbit_modifier),
+            ("Pan Modifier", &bindings.pan_modifier),
+            ("Undo", &bindings.undo),
+            ("Redo", &bindings.redo),
+            ("Clear Canvas", &bindings.clear_canvas),
+            ("Brush Size Down", &bindings.brush_size_down),
+            ("Brush Size Up", &bindings.brush_size_up),
+            ("Select Brush Tool", &bindings.tool_brush),
+            ("Select Eraser Tool", &bindings.tool_eraser),
+        ];
+
+        let mouse_bindings = [
+            ("Paint Button", &bindings.paint_button),
+            ("Pan Button", &bindings.pan_button),
+        ];
+
+        let mut by_combo: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+
+        for (name, binding) in key_bindings {
+            let key = format!("Key:{}", Self::key_binding_signature(binding));
+            by_combo.entry(key).or_default().push(name);
+        }
+
+        for (name, binding) in mouse_bindings {
+            let key = format!("Mouse:{}", binding.button);
+            by_combo.entry(key).or_default().push(name);
+        }
+
+        let mut warnings = Vec::new();
+        for (combo, actions) in by_combo {
+            if actions.len() > 1 {
+                warnings.push(format!(
+                    "{} is assigned to multiple actions: {}",
+                    combo,
+                    actions.join(", ")
+                ));
+            }
+        }
+
+        warnings
     }
 
     pub fn update(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
@@ -733,6 +890,8 @@ impl State {
         let mut geometry_to_switch = None;
         let mut gltf_to_load = None;
         let mut recompute_uv_requested = false;
+        let mut save_bindings_requested = false;
+        let mut reset_bindings_requested = false;
 
         egui::Panel::top("top_menu").show(&self.egui_ctx, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
@@ -1326,8 +1485,101 @@ impl State {
                         }
                     });
                 });
+
+            ui.separator();
+            egui::CollapsingHeader::new("Bindings")
+                .default_open(false)
+                .show(ui, |ui| {
+                    ui.label("Customize keys and mouse buttons for actions.");
+                    ui.small(format!("Settings file: {}", self.settings_path.display()));
+
+                    ui.separator();
+                    ui.label(egui::RichText::new("Navigation").strong());
+                    ui.group(|ui| {
+                        ui.label("Orbit Modifier");
+                        Self::draw_key_binding_editor(ui, "bind_orbit", &mut self.settings.bindings.orbit_modifier);
+                    });
+                    ui.group(|ui| {
+                        ui.label("Pan Modifier");
+                        Self::draw_key_binding_editor(ui, "bind_pan_mod", &mut self.settings.bindings.pan_modifier);
+                    });
+
+                    ui.separator();
+                    ui.label(egui::RichText::new("Edit Actions").strong());
+                    ui.group(|ui| {
+                        ui.label("Undo");
+                        Self::draw_key_binding_editor(ui, "bind_undo", &mut self.settings.bindings.undo);
+                    });
+                    ui.group(|ui| {
+                        ui.label("Redo");
+                        Self::draw_key_binding_editor(ui, "bind_redo", &mut self.settings.bindings.redo);
+                    });
+                    ui.group(|ui| {
+                        ui.label("Clear Canvas");
+                        Self::draw_key_binding_editor(ui, "bind_clear", &mut self.settings.bindings.clear_canvas);
+                    });
+
+                    ui.separator();
+                    ui.label(egui::RichText::new("Brush").strong());
+                    ui.group(|ui| {
+                        ui.label("Brush Size Down");
+                        Self::draw_key_binding_editor(ui, "bind_size_down", &mut self.settings.bindings.brush_size_down);
+                    });
+                    ui.group(|ui| {
+                        ui.label("Brush Size Up");
+                        Self::draw_key_binding_editor(ui, "bind_size_up", &mut self.settings.bindings.brush_size_up);
+                    });
+                    ui.group(|ui| {
+                        ui.label("Select Brush Tool");
+                        Self::draw_key_binding_editor(ui, "bind_tool_brush", &mut self.settings.bindings.tool_brush);
+                    });
+                    ui.group(|ui| {
+                        ui.label("Select Eraser Tool");
+                        Self::draw_key_binding_editor(ui, "bind_tool_eraser", &mut self.settings.bindings.tool_eraser);
+                    });
+
+                    ui.separator();
+                    ui.label(egui::RichText::new("Mouse Buttons").strong());
+                    ui.group(|ui| {
+                        ui.label("Paint Button");
+                        Self::draw_mouse_binding_editor(ui, "bind_paint_btn", &mut self.settings.bindings.paint_button);
+                    });
+                    ui.group(|ui| {
+                        ui.label("Pan Button");
+                        Self::draw_mouse_binding_editor(ui, "bind_pan_btn", &mut self.settings.bindings.pan_button);
+                    });
+
+                    ui.horizontal(|ui| {
+                        if ui.button("Save Bindings").clicked() {
+                            save_bindings_requested = true;
+                        }
+                        if ui.button("Reset Defaults").clicked() {
+                            reset_bindings_requested = true;
+                        }
+                    });
+
+                    let conflicts = Self::binding_conflicts(&self.settings.bindings);
+                    if !conflicts.is_empty() {
+                        ui.add_space(6.0);
+                        ui.colored_label(egui::Color32::from_rgb(255, 180, 80), "Binding conflicts detected:");
+                        for conflict in conflicts {
+                            ui.colored_label(egui::Color32::from_rgb(255, 120, 120), format!("- {}", conflict));
+                        }
+                    }
+
+                    if let Some(msg) = &self.settings_feedback {
+                        ui.label(egui::RichText::new(msg).small());
+                    }
+                });
             });
         });
+
+        if reset_bindings_requested {
+            self.settings.bindings = settings::InputBindings::default();
+            self.save_settings();
+        } else if save_bindings_requested {
+            self.save_settings();
+        }
 
         if self.show_pressure_calibration {
             let mut is_open = self.show_pressure_calibration;
