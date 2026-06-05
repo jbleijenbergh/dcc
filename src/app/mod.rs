@@ -202,7 +202,6 @@ impl State {
                     layer_count: initial_layer_count,
                     current_mesh: "Sphere".to_string(),
                     num_udim_tiles: initial_num_udims,
-                    new_layer_name: String::new(),
                 },
                 canvas: architecture::state::CanvasState {
                     brush_size: 25.0,
@@ -595,17 +594,6 @@ impl State {
 
     #[allow(deprecated)]
     pub fn render(&mut self) -> Result<(), SurfaceError> {
-        let layers_snapshot = self.painter.layers.clone();
-        let active_idx_snapshot = self.painter.active_layer_idx;
-        let mut undo_state_to_push: Option<architecture::state::UndoState> = None;
-
-        let push_undo_snapshot = || {
-            architecture::state::UndoState {
-                layers: layers_snapshot.clone(),
-                active_layer_idx: active_idx_snapshot,
-            }
-        };
-
         let egui_input = self.egui_state.take_egui_input(&*self.window);
         self.egui_ctx.begin_pass(egui_input);
 
@@ -880,61 +868,63 @@ impl State {
             egui::CollapsingHeader::new("Layers")
                 .default_open(true)
                 .show(ui, |ui| {
+                    let layer_name_id = egui::Id::new("add_layer_name_draft");
+                    let mut layer_name_draft = self
+                        .egui_ctx
+                        .data_mut(|d| d.get_persisted::<String>(layer_name_id).unwrap_or_default());
+
                     ui.horizontal(|ui| {
-                        ui.text_edit_singleline(&mut self.app_state.document.new_layer_name);
-                        if ui.button("Add").clicked() && !self.app_state.document.new_layer_name.trim().is_empty() {
-                            undo_state_to_push = Some(push_undo_snapshot());
-                            self.painter.add_paint_layer(self.app_state.document.new_layer_name.trim().to_string(), &self.device, &self.queue);
-                            self.app_state.document.new_layer_name.clear();
+                        ui.text_edit_singleline(&mut layer_name_draft);
+                        if ui.button("Add").clicked() {
+                            let layer_name = layer_name_draft.trim().to_string();
+                            if !layer_name.is_empty() {
+                                pending_ui_actions.push(architecture::message::UiAction::AddPaintLayer(layer_name));
+                                layer_name_draft.clear();
+                            }
                         }
                     });
 
+                    self.egui_ctx
+                        .data_mut(|d| d.insert_persisted(layer_name_id, layer_name_draft));
+
                     ui.horizontal(|ui| {
                         if ui.button("Add UV Grid Layer").clicked() {
-                            undo_state_to_push = Some(push_undo_snapshot());
-                            self.painter.load_uv_grid_layer(&self.device, &self.queue);
+                            pending_ui_actions.push(architecture::message::UiAction::AddUvGridLayer);
                         }
                         if ui.button("Add UV Checker Layer").clicked() {
-                            undo_state_to_push = Some(push_undo_snapshot());
-                            self.painter.load_uv_checker_layer(&self.device, &self.queue);
+                            pending_ui_actions.push(architecture::message::UiAction::AddUvCheckerLayer);
                         }
                     });
 
                     if ui.button("✨ Add Fill Layer").clicked() {
-                        undo_state_to_push = Some(push_undo_snapshot());
-                        let name = format!("Fill {}", self.painter.layers.len() + 1);
-                        self.painter.add_fill_layer(name, &self.device, &self.queue, &self.viewport.document);
+                        pending_ui_actions.push(architecture::message::UiAction::AddFillLayer);
                     }
 
                     ui.separator();
 
                     let layer_count = self.painter.layers.len();
-                    let mut layer_to_delete = None;
                     
                     for idx in (0..layer_count).rev() {
                         let is_active = self.painter.active_layer_idx == idx;
                         ui.horizontal(|ui| {
                             if ui.selectable_label(is_active, &self.painter.layers[idx].name).clicked() {
-                                self.painter.active_layer_idx = idx;
+                                pending_ui_actions.push(architecture::message::UiAction::SelectLayer(idx));
                             }
 
                             let mut visible = self.painter.layers[idx].visible;
                             if ui.checkbox(&mut visible, "").changed() {
-                                undo_state_to_push = Some(push_undo_snapshot());
-                                self.painter.layers[idx].visible = visible;
-                                self.painter.compose_layers(&self.device, &self.queue);
+                                pending_ui_actions.push(architecture::message::UiAction::SetLayerVisible { idx, visible });
                             }
 
                             if layer_count > 1 {
                                 if ui.button("🗑").clicked() {
-                                    layer_to_delete = Some(idx);
+                                    pending_ui_actions.push(architecture::message::UiAction::DeleteLayer(idx));
                                 }
                             }
                         });
 
                         if is_active {
                             let is_fill = self.painter.layers[idx].is_fill;
-                            let mut fill_changed = false;
                             ui.indent("layer_props", |ui| {
                                 ui.horizontal(|ui| {
                                     ui.label("Blend:");
@@ -943,19 +933,13 @@ impl State {
                                         .selected_text(blend.to_str())
                                         .show_ui(ui, |ui| {
                                             if ui.selectable_value(&mut blend, BlendMode::Normal, "Normal").changed() {
-                                                undo_state_to_push = Some(push_undo_snapshot());
-                                                self.painter.layers[idx].blend_mode = blend;
-                                                self.painter.compose_layers(&self.device, &self.queue);
+                                                pending_ui_actions.push(architecture::message::UiAction::SetLayerBlendMode { idx, mode: blend });
                                             }
                                             if ui.selectable_value(&mut blend, BlendMode::Multiply, "Multiply").changed() {
-                                                undo_state_to_push = Some(push_undo_snapshot());
-                                                self.painter.layers[idx].blend_mode = blend;
-                                                self.painter.compose_layers(&self.device, &self.queue);
+                                                pending_ui_actions.push(architecture::message::UiAction::SetLayerBlendMode { idx, mode: blend });
                                             }
                                             if ui.selectable_value(&mut blend, BlendMode::Add, "Add").changed() {
-                                                undo_state_to_push = Some(push_undo_snapshot());
-                                                self.painter.layers[idx].blend_mode = blend;
-                                                self.painter.compose_layers(&self.device, &self.queue);
+                                                pending_ui_actions.push(architecture::message::UiAction::SetLayerBlendMode { idx, mode: blend });
                                             }
                                         });
                                 });
@@ -964,12 +948,12 @@ impl State {
                                     ui.label("Opacity:");
                                     let mut op = self.painter.layers[idx].opacity;
                                     let response = ui.add(egui::Slider::new(&mut op, 0.0..=1.0));
-                                    if response.drag_started() {
-                                        undo_state_to_push = Some(push_undo_snapshot());
-                                    }
                                     if response.changed() {
-                                        self.painter.layers[idx].opacity = op;
-                                        self.painter.compose_layers(&self.device, &self.queue);
+                                        pending_ui_actions.push(architecture::message::UiAction::SetLayerOpacity {
+                                            idx,
+                                            opacity: op,
+                                            begin_undo: response.drag_started(),
+                                        });
                                     }
                                 });
 
@@ -986,15 +970,16 @@ impl State {
                                             self.painter.layers[idx].fill_color[3] as f32 / 255.0,
                                         ];
                                         let response = ui.color_edit_button_rgba_unmultiplied(&mut c);
-                                        if response.drag_started() {
-                                            undo_state_to_push = Some(push_undo_snapshot());
-                                        }
                                         if response.changed() {
-                                            self.painter.layers[idx].fill_color = [
+                                            let color = [
                                                 (c[0] * 255.0) as u8, (c[1] * 255.0) as u8,
                                                 (c[2] * 255.0) as u8, (c[3] * 255.0) as u8,
                                             ];
-                                            fill_changed = true;
+                                            pending_ui_actions.push(architecture::message::UiAction::SetFillBaseColor {
+                                                idx,
+                                                color,
+                                                begin_undo: response.drag_started(),
+                                            });
                                         }
                                     });
 
@@ -1007,15 +992,16 @@ impl State {
                                             self.painter.layers[idx].fill_noise_color[3] as f32 / 255.0,
                                         ];
                                         let response = ui.color_edit_button_rgba_unmultiplied(&mut c);
-                                        if response.drag_started() {
-                                            undo_state_to_push = Some(push_undo_snapshot());
-                                        }
                                         if response.changed() {
-                                            self.painter.layers[idx].fill_noise_color = [
+                                            let color = [
                                                 (c[0] * 255.0) as u8, (c[1] * 255.0) as u8,
                                                 (c[2] * 255.0) as u8, (c[3] * 255.0) as u8,
                                             ];
-                                            fill_changed = true;
+                                            pending_ui_actions.push(architecture::message::UiAction::SetFillNoiseColor {
+                                                idx,
+                                                color,
+                                                begin_undo: response.drag_started(),
+                                            });
                                         }
                                     });
 
@@ -1023,12 +1009,12 @@ impl State {
                                         ui.label("Noise Scale:");
                                         let mut scale = self.painter.layers[idx].fill_noise_scale;
                                         let response = ui.add(egui::Slider::new(&mut scale, 0.5..=50.0));
-                                        if response.drag_started() {
-                                            undo_state_to_push = Some(push_undo_snapshot());
-                                        }
                                         if response.changed() {
-                                            self.painter.layers[idx].fill_noise_scale = scale;
-                                            fill_changed = true;
+                                            pending_ui_actions.push(architecture::message::UiAction::SetFillNoiseScale {
+                                                idx,
+                                                scale,
+                                                begin_undo: response.drag_started(),
+                                            });
                                         }
                                     });
 
@@ -1043,38 +1029,13 @@ impl State {
                                                 ui.selectable_value(&mut mode, 1u32, "Triplanar");
                                             });
                                         if mode != prev_mode {
-                                            undo_state_to_push = Some(push_undo_snapshot());
-                                            self.painter.layers[idx].fill_projection_mode = mode;
-                                            fill_changed = true;
+                                            pending_ui_actions.push(architecture::message::UiAction::SetFillProjectionMode { idx, mode });
                                         }
                                     });
                                 }
                             });
-
-                            if is_fill && fill_changed {
-                                let layer = &self.painter.layers[idx];
-                                let base = [
-                                    layer.fill_color[0] as f32 / 255.0, layer.fill_color[1] as f32 / 255.0,
-                                    layer.fill_color[2] as f32 / 255.0, layer.fill_color[3] as f32 / 255.0,
-                                ];
-                                let noise = [
-                                    layer.fill_noise_color[0] as f32 / 255.0, layer.fill_noise_color[1] as f32 / 255.0,
-                                    layer.fill_noise_color[2] as f32 / 255.0, layer.fill_noise_color[3] as f32 / 255.0,
-                                ];
-                                let scale = layer.fill_noise_scale;
-                                let proj = layer.fill_projection_mode;
-                                self.painter.render_fill_layer(
-                                    &self.device, &self.queue, idx, base, noise, scale, proj,
-                                    &self.viewport.document,
-                                );
-                                self.painter.compose_layers(&self.device, &self.queue);
-                            }
                         }
                         ui.separator();
-                    }
-
-                    if let Some(to_del) = layer_to_delete {
-                        self.painter.delete_layer(to_del, &self.device, &self.queue);
                     }
                 });
 
@@ -1496,14 +1457,6 @@ impl State {
                     painter.circle_filled(marker, 4.0, egui::Color32::YELLOW);
                 });
             self.app_state.ui.show_pressure_calibration = is_open;
-        }
-
-        if let Some(undo_state) = undo_state_to_push {
-            self.app_state.history.redo_stack.clear();
-            self.app_state.history.undo_stack.push(undo_state);
-            if self.app_state.history.undo_stack.len() > 50 {
-                self.app_state.history.undo_stack.remove(0);
-            }
         }
 
         if export_requested {
