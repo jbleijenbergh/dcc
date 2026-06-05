@@ -3,6 +3,7 @@ mod actions;
 mod types;
 mod user_preferences;
 mod architecture;
+pub(crate) mod input;
 
 pub use types::{Tool, SurfaceError, LoadError};
 
@@ -302,7 +303,7 @@ impl State {
         if egui_resp.consumed {
             return true;
         }
-        let messages = architecture::input::normalize_window_event(self, event);
+        let messages = input::normalize_window_event(self, event);
         let mut consumed = false;
         for message in messages {
             consumed |= architecture::reducer::dispatch(self, message);

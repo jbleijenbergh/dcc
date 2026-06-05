@@ -1,6 +1,6 @@
 use std::sync::OnceLock;
 
-use super::input::{ModifiersSnapshot, PointerData};
+use crate::app::input::{ModifiersSnapshot, PointerData};
 use super::message::{DocumentCommand, Message, ToolKind, UiAction, ViewportCommand, ToolCommand, InputStateCommand};
 use super::tool::ToolSystem;
 use super::super::rerender_fill_layer;

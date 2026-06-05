@@ -1,4 +1,4 @@
-use super::input::PointerData;
+use crate::app::input::PointerData;
 use super::message::ToolKind;
 use crate::app::types::Tool;
 use crate::app::State;

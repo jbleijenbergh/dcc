@@ -1,4 +1,4 @@
-use super::input::{ModifiersSnapshot, PointerData};
+use crate::app::input::{ModifiersSnapshot, PointerData};
 use crate::painter::BlendMode;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

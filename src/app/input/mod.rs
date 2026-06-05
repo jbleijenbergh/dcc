@@ -2,7 +2,7 @@ use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::keyboard::PhysicalKey;
 
-use super::message::{
+use crate::app::architecture::message::{
     InputStateCommand, Message, ToolCommand, ToolKind, UiAction, ViewportCommand,
 };
 use crate::app::State;
@@ -337,7 +337,7 @@ pub fn normalize_window_event(state: &State, event: &WindowEvent) -> Vec<Message
 
                     if *button == MouseButton::Left {
                         out.push(Message::Document(
-                            super::message::DocumentCommand::CommitCurrentStroke,
+                            crate::app::architecture::message::DocumentCommand::CommitCurrentStroke,
                         ));
                     }
                 }
