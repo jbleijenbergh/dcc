@@ -42,8 +42,8 @@ impl State {
         if let Some(hit) = hit_opt {
             let paint_start = std::time::Instant::now();
 
-            if self.current_stroke.is_none() && !is_eraser {
-                self.current_stroke = Some(crate::painter::PaintStroke {
+            if self.interaction.stroke_in_progress.is_none() && !is_eraser {
+                self.interaction.stroke_in_progress = Some(crate::painter::PaintStroke {
                     points: Vec::new(),
                     uv_points: Vec::new(),
                     point_radii: Vec::new(),
@@ -54,20 +54,20 @@ impl State {
                     is_eraser: false,
                 });
             }
-            if let Some(ref mut stroke) = self.current_stroke {
+            if let Some(ref mut stroke) = self.interaction.stroke_in_progress {
                 stroke.points.push(hit.point);
                 stroke.uv_points.push(hit.uv);
                 stroke.point_radii.push(effective_size);
                 stroke.point_alphas.push(brush_rgba[3]);
             }
 
-            if let Some(last_uv) = self.app_state.input.last_hit_uv {
+            if let Some(last_uv) = self.interaction.last_hit_uv {
                 self.painter.paint_stroke(
                     &self.device,
                     &self.queue,
                     last_uv,
                     hit.uv,
-                    self.app_state.input.last_hit_pos,
+                    self.interaction.last_hit_pos,
                     Some(hit.point),
                     brush_rgba,
                     effective_size,
@@ -101,8 +101,8 @@ impl State {
                 );
             }
             let paint_duration = paint_start.elapsed();
-            self.app_state.input.last_hit_uv = Some(hit.uv);
-            self.app_state.input.last_hit_pos = Some(hit.point);
+            self.interaction.last_hit_uv = Some(hit.uv);
+            self.interaction.last_hit_pos = Some(hit.point);
 
             log::debug!(
                 "Paint stroke timing: raycast={:?}, paint={:?}, total={:?}",
@@ -112,8 +112,8 @@ impl State {
             );
             self.window.request_redraw();
         } else {
-            self.app_state.input.last_hit_uv = None;
-            self.app_state.input.last_hit_pos = None;
+            self.interaction.last_hit_uv = None;
+            self.interaction.last_hit_pos = None;
         }
     }
 

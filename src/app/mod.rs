@@ -15,6 +15,13 @@ use winit::window::Window;
 use crate::painter::BlendMode;
 use user_preferences::{UserPreferences, KEY_CHOICES, MOUSE_BUTTON_CHOICES, parse_key_code, parse_mouse_button};
 
+#[derive(Default)]
+pub(crate) struct InteractionState {
+    pub stroke_in_progress: Option<crate::painter::PaintStroke>,
+    pub last_hit_uv: Option<glam::Vec2>,
+    pub last_hit_pos: Option<glam::Vec3>,
+}
+
 pub struct State {
     surface: wgpu::Surface<'static>,
     device: Arc<wgpu::Device>,
@@ -44,7 +51,7 @@ pub struct State {
     gltf_loading_status: Option<Arc<std::sync::Mutex<String>>>,
 
     pub import_settings: crate::mesh::ImportSettings,
-    current_stroke: Option<crate::painter::PaintStroke>,
+    interaction: InteractionState,
     loading_path: Option<std::path::PathBuf>,
     supported_present_modes: Vec<wgpu::PresentMode>,
 
@@ -182,7 +189,7 @@ impl State {
                 margin_size: crate::mesh::MarginSize::Medium,
                 island_orientation: crate::mesh::IslandOrientation::AlignWith3DMesh,
             },
-            current_stroke: None,
+            interaction: InteractionState::default(),
             loading_path: None,
             supported_present_modes: surface_caps.present_modes,
 
@@ -236,8 +243,6 @@ impl State {
                     pen_pressure: 1.0,
                     touchpad_pressure_stage: 0,
                     last_mouse_pos: winit::dpi::PhysicalPosition::new(0.0, 0.0),
-                    last_hit_uv: None,
-                    last_hit_pos: None,
                 },
             },
         };
@@ -345,15 +350,15 @@ impl State {
     }
 
     pub(crate) fn commit_current_stroke(&mut self) {
-        if let Some(stroke) = self.current_stroke.take() {
+        if let Some(stroke) = self.interaction.stroke_in_progress.take() {
             let active = self.painter.active_layer_idx;
             if active < self.painter.layers.len() && !self.painter.layers[active].is_fill {
                 self.push_undo_state();
                 self.painter.layers[active].strokes.push(stroke);
             }
         }
-        self.app_state.input.last_hit_uv = None;
-        self.app_state.input.last_hit_pos = None;
+        self.interaction.last_hit_uv = None;
+        self.interaction.last_hit_pos = None;
         self.app_state.input.paint_button_down = false;
         self.app_state.input.pen_pressure = 1.0;
         if self.app_state.input.touchpad_pressure_stage <= 0 {

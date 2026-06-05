@@ -39,8 +39,8 @@ impl ToolHandler for BrushTool {
     fn on_pointer_up(&mut self, _state: &mut State, _pointer: &PointerData) {}
 
     fn on_pointer_cancel(&mut self, state: &mut State, _pointer: &PointerData) {
-        state.app_state.input.last_hit_uv = None;
-        state.app_state.input.last_hit_pos = None;
+        state.interaction.last_hit_uv = None;
+        state.interaction.last_hit_pos = None;
     }
 }
 
@@ -66,8 +66,8 @@ impl ToolHandler for EraserTool {
     fn on_pointer_up(&mut self, _state: &mut State, _pointer: &PointerData) {}
 
     fn on_pointer_cancel(&mut self, state: &mut State, _pointer: &PointerData) {
-        state.app_state.input.last_hit_uv = None;
-        state.app_state.input.last_hit_pos = None;
+        state.interaction.last_hit_uv = None;
+        state.interaction.last_hit_pos = None;
     }
 }
 

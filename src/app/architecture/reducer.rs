@@ -146,8 +146,8 @@ pub fn dispatch(state: &mut State, message: Message) -> bool {
                                 -std::f32::consts::FRAC_PI_2 + 0.05,
                                 std::f32::consts::FRAC_PI_2 - 0.05,
                             );
-                        state.app_state.input.last_hit_uv = None;
-                        state.app_state.input.last_hit_pos = None;
+                        state.interaction.last_hit_uv = None;
+                        state.interaction.last_hit_pos = None;
                     } else {
                         apply_tool_pointer_move(state, &pointer);
                     }
@@ -171,8 +171,8 @@ pub fn dispatch(state: &mut State, message: Message) -> bool {
             InputEvent::PointerUp(pointer) => {
                 update_mouse_position(state, &pointer);
                 state.app_state.input.paint_button_down = false;
-                state.app_state.input.last_hit_uv = None;
-                state.app_state.input.last_hit_pos = None;
+                state.interaction.last_hit_uv = None;
+                state.interaction.last_hit_pos = None;
                 state.app_state.input.pen_pressure = 1.0;
                 if state.app_state.input.touchpad_pressure_stage <= 0 {
                     state.app_state.input.has_tablet_input = false;
@@ -183,8 +183,8 @@ pub fn dispatch(state: &mut State, message: Message) -> bool {
             InputEvent::PointerCancel(pointer) => {
                 update_mouse_position(state, &pointer);
                 state.app_state.input.paint_button_down = false;
-                state.app_state.input.last_hit_uv = None;
-                state.app_state.input.last_hit_pos = None;
+                state.interaction.last_hit_uv = None;
+                state.interaction.last_hit_pos = None;
                 apply_tool_pointer_cancel(state, &pointer);
                 true
             }

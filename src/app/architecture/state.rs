@@ -1,4 +1,3 @@
-use glam::{Vec2, Vec3};
 use winit::dpi::PhysicalPosition;
 
 use crate::app::types::Tool;
@@ -89,6 +88,4 @@ pub struct InputSnapshot {
     pub pen_pressure: f32,
     pub touchpad_pressure_stage: i64,
     pub last_mouse_pos: PhysicalPosition<f64>,
-    pub last_hit_uv: Option<Vec2>,
-    pub last_hit_pos: Option<Vec3>,
 }
