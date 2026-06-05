@@ -1,9 +1,11 @@
 use std::sync::OnceLock;
 
-use crate::app::input::{ModifiersSnapshot, PointerData};
-use super::message::{DocumentCommand, Message, ToolKind, UiAction, ViewportCommand, ToolCommand, InputStateCommand};
-use super::tool::ToolSystem;
 use super::super::rerender_fill_layer;
+use super::message::{
+    DocumentCommand, InputStateCommand, Message, ToolCommand, ToolKind, UiAction, ViewportCommand,
+};
+use super::tool::ToolSystem;
+use crate::app::input::{ModifiersSnapshot, PointerData};
 use crate::app::types::Tool;
 use crate::app::State;
 
@@ -15,7 +17,9 @@ fn tool_system() -> &'static std::sync::Mutex<ToolSystem> {
 fn update_modifier_state(state: &mut State, key: winit::keyboard::KeyCode, is_pressed: bool) {
     use winit::keyboard::KeyCode;
     match key {
-        KeyCode::ControlLeft | KeyCode::ControlRight => state.app_state.input_mut().ctrl = is_pressed,
+        KeyCode::ControlLeft | KeyCode::ControlRight => {
+            state.app_state.input_mut().ctrl = is_pressed
+        }
         KeyCode::SuperLeft | KeyCode::SuperRight => state.app_state.input_mut().cmd = is_pressed,
         KeyCode::ShiftLeft | KeyCode::ShiftRight => state.app_state.input_mut().shift = is_pressed,
         KeyCode::AltLeft | KeyCode::AltRight => state.app_state.input_mut().alt = is_pressed,
@@ -97,12 +101,13 @@ pub fn dispatch(state: &mut State, message: Message) -> bool {
                     let up = right.cross(forward).normalize();
 
                     let speed = state.viewport.camera.distance * 0.0015;
-                    state.viewport.camera.target +=
-                        right * (-dx * speed) + up * (dy * speed);
+                    state.viewport.camera.target += right * (-dx * speed) + up * (dy * speed);
                 }
                 ViewportCommand::Zoom { scroll } => {
-                    state.viewport.camera.distance =
-                        (state.viewport.camera.distance - scroll * 0.25).max(1.0).min(50.0);
+                    state.viewport.camera.distance = (state.viewport.camera.distance
+                        - scroll * 0.25)
+                        .max(1.0)
+                        .min(50.0);
                 }
             }
             true
@@ -170,7 +175,8 @@ pub fn dispatch(state: &mut State, message: Message) -> bool {
                     };
                 }
                 UiAction::AdjustBrushSize(delta) => {
-                    state.app_state.canvas_mut().brush_size = (state.app_state.canvas().brush_size + delta).clamp(2.0, 300.0);
+                    state.app_state.canvas_mut().brush_size =
+                        (state.app_state.canvas().brush_size + delta).clamp(2.0, 300.0);
                 }
                 UiAction::SetBrushSize(size) => {
                     state.app_state.canvas_mut().brush_size = size.clamp(2.0, 300.0);
@@ -259,21 +265,34 @@ pub fn dispatch(state: &mut State, message: Message) -> bool {
                     let trimmed = name.trim();
                     if !trimmed.is_empty() {
                         state.push_undo_state();
-                        state.painter.add_paint_layer(trimmed.to_string(), &state.device, &state.queue);
+                        state.painter.add_paint_layer(
+                            trimmed.to_string(),
+                            &state.device,
+                            &state.queue,
+                        );
                     }
                 }
                 UiAction::AddUvGridLayer => {
                     state.push_undo_state();
-                    state.painter.load_uv_grid_layer(&state.device, &state.queue);
+                    state
+                        .painter
+                        .load_uv_grid_layer(&state.device, &state.queue);
                 }
                 UiAction::AddUvCheckerLayer => {
                     state.push_undo_state();
-                    state.painter.load_uv_checker_layer(&state.device, &state.queue);
+                    state
+                        .painter
+                        .load_uv_checker_layer(&state.device, &state.queue);
                 }
                 UiAction::AddFillLayer => {
                     state.push_undo_state();
                     let name = format!("Fill {}", state.painter.layers.len() + 1);
-                    state.painter.add_fill_layer(name, &state.device, &state.queue, &state.viewport.document);
+                    state.painter.add_fill_layer(
+                        name,
+                        &state.device,
+                        &state.queue,
+                        &state.viewport.document,
+                    );
                 }
                 UiAction::DeleteLayer(idx) => {
                     if state.painter.layers.len() > 1 && idx < state.painter.layers.len() {
@@ -282,20 +301,28 @@ pub fn dispatch(state: &mut State, message: Message) -> bool {
                     }
                 }
                 UiAction::SetLayerVisible { idx, visible } => {
-                    if idx < state.painter.layers.len() && state.painter.layers[idx].visible != visible {
+                    if idx < state.painter.layers.len()
+                        && state.painter.layers[idx].visible != visible
+                    {
                         state.push_undo_state();
                         state.painter.layers[idx].visible = visible;
                         state.painter.compose_layers(&state.device, &state.queue);
                     }
                 }
                 UiAction::SetLayerBlendMode { idx, mode } => {
-                    if idx < state.painter.layers.len() && state.painter.layers[idx].blend_mode != mode {
+                    if idx < state.painter.layers.len()
+                        && state.painter.layers[idx].blend_mode != mode
+                    {
                         state.push_undo_state();
                         state.painter.layers[idx].blend_mode = mode;
                         state.painter.compose_layers(&state.device, &state.queue);
                     }
                 }
-                UiAction::SetLayerOpacity { idx, opacity, begin_undo } => {
+                UiAction::SetLayerOpacity {
+                    idx,
+                    opacity,
+                    begin_undo,
+                } => {
                     if idx < state.painter.layers.len() {
                         if begin_undo {
                             state.push_undo_state();
@@ -304,7 +331,11 @@ pub fn dispatch(state: &mut State, message: Message) -> bool {
                         state.painter.compose_layers(&state.device, &state.queue);
                     }
                 }
-                UiAction::SetFillBaseColor { idx, color, begin_undo } => {
+                UiAction::SetFillBaseColor {
+                    idx,
+                    color,
+                    begin_undo,
+                } => {
                     if idx < state.painter.layers.len() && state.painter.layers[idx].is_fill {
                         if begin_undo {
                             state.push_undo_state();
@@ -313,7 +344,11 @@ pub fn dispatch(state: &mut State, message: Message) -> bool {
                         rerender_fill_layer(state, idx);
                     }
                 }
-                UiAction::SetFillNoiseColor { idx, color, begin_undo } => {
+                UiAction::SetFillNoiseColor {
+                    idx,
+                    color,
+                    begin_undo,
+                } => {
                     if idx < state.painter.layers.len() && state.painter.layers[idx].is_fill {
                         if begin_undo {
                             state.push_undo_state();
@@ -322,7 +357,11 @@ pub fn dispatch(state: &mut State, message: Message) -> bool {
                         rerender_fill_layer(state, idx);
                     }
                 }
-                UiAction::SetFillNoiseScale { idx, scale, begin_undo } => {
+                UiAction::SetFillNoiseScale {
+                    idx,
+                    scale,
+                    begin_undo,
+                } => {
                     if idx < state.painter.layers.len() && state.painter.layers[idx].is_fill {
                         if begin_undo {
                             state.push_undo_state();
@@ -332,7 +371,10 @@ pub fn dispatch(state: &mut State, message: Message) -> bool {
                     }
                 }
                 UiAction::SetFillProjectionMode { idx, mode } => {
-                    if idx < state.painter.layers.len() && state.painter.layers[idx].is_fill && state.painter.layers[idx].fill_projection_mode != mode {
+                    if idx < state.painter.layers.len()
+                        && state.painter.layers[idx].is_fill
+                        && state.painter.layers[idx].fill_projection_mode != mode
+                    {
                         state.push_undo_state();
                         state.painter.layers[idx].fill_projection_mode = mode;
                         rerender_fill_layer(state, idx);

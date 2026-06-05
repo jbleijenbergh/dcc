@@ -1,5 +1,5 @@
-use crate::app::input::PointerData;
 use super::message::ToolKind;
+use crate::app::input::PointerData;
 use crate::app::types::Tool;
 use crate::app::State;
 
@@ -31,7 +31,10 @@ impl ToolHandler for BrushTool {
 
     fn on_pointer_move(&mut self, state: &mut State, _pointer: &PointerData) {
         state.app_state.tool_mut().active_tool = Tool::Brush;
-        if state.app_state.input().paint_button_down && !state.app_state.input().orbit_modifier && !state.app_state.input().alt {
+        if state.app_state.input().paint_button_down
+            && !state.app_state.input().orbit_modifier
+            && !state.app_state.input().alt
+        {
             state.paint_at_cursor();
         }
     }
@@ -58,7 +61,10 @@ impl ToolHandler for EraserTool {
 
     fn on_pointer_move(&mut self, state: &mut State, _pointer: &PointerData) {
         state.app_state.tool_mut().active_tool = Tool::Eraser;
-        if state.app_state.input().paint_button_down && !state.app_state.input().orbit_modifier && !state.app_state.input().alt {
+        if state.app_state.input().paint_button_down
+            && !state.app_state.input().orbit_modifier
+            && !state.app_state.input().alt
+        {
             state.paint_at_cursor();
         }
     }
