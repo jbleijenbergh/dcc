@@ -41,14 +41,14 @@ pub struct Layer {
     pub opacity: f32,
     pub visible: bool,
     pub blend_mode: BlendMode,
-    
+
     // Fill layer properties
     pub is_fill: bool,
     pub fill_color: [u8; 4],
     pub fill_noise_color: [u8; 4],
     pub fill_noise_scale: f32,
     pub fill_projection_mode: u32, // 0: UV, 1: Triplanar
-    
+
     // Strokes history
     pub strokes: Vec<PaintStroke>,
 }
@@ -140,26 +140,26 @@ pub struct Painter {
     pub height: u32,
     pub layers: Vec<Layer>,
     pub active_layer_idx: usize,
-    
+
     // WGPU Resources
     pub layer_array_texture: wgpu::Texture,
     pub layer_views: Vec<wgpu::TextureView>,
-    
+
     pub texture: wgpu::Texture, // composite texture array
     pub composite_views: Vec<wgpu::TextureView>,
     pub texture_view: wgpu::TextureView, // full array view
     pub sampler: wgpu::Sampler,
     pub bind_group: wgpu::BindGroup,
-    
+
     brush_pipeline_add: wgpu::RenderPipeline,
     brush_pipeline_sub: wgpu::RenderPipeline,
     brush_uniform_buffer: wgpu::Buffer,
     brush_bind_group: wgpu::BindGroup,
-    
+
     composite_pipeline: wgpu::RenderPipeline,
     composite_uniform_buffer: wgpu::Buffer,
     composite_bind_group: wgpu::BindGroup,
-    
+
     // Fill Layer resources
     pub fill_pipeline: wgpu::RenderPipeline,
     pub fill_uniform_buffer: wgpu::Buffer,
@@ -170,7 +170,7 @@ impl Painter {
     pub fn new(device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> Self {
         let width = 1024;
         let height = 1024;
-        
+
         let size = wgpu::Extent3d {
             width,
             height,
@@ -190,10 +190,12 @@ impl Painter {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
-        
+
         let mut composite_views = Vec::new();
         for i in 0..MAX_UDIMS {
             composite_views.push(texture.create_view(&wgpu::TextureViewDescriptor {
@@ -217,19 +219,24 @@ impl Painter {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
-        
+
         let mut layer_views = Vec::new();
         for i in 0..MAX_LAYERS * MAX_UDIMS {
-            layer_views.push(layer_array_texture.create_view(&wgpu::TextureViewDescriptor {
-                label: Some(&format!("Layer View {}", i)),
-                dimension: Some(wgpu::TextureViewDimension::D2),
-                base_array_layer: i as u32,
-                array_layer_count: Some(1),
-                ..Default::default()
-            }));
+            layer_views.push(
+                layer_array_texture.create_view(&wgpu::TextureViewDescriptor {
+                    label: Some(&format!("Layer View {}", i)),
+                    dimension: Some(wgpu::TextureViewDimension::D2),
+                    base_array_layer: i as u32,
+                    array_layer_count: Some(1),
+                    ..Default::default()
+                }),
+            );
         }
         let layer_array_view = layer_array_texture.create_view(&wgpu::TextureViewDescriptor {
             label: Some("Layer Array Full View"),
@@ -249,8 +256,14 @@ impl Painter {
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&texture_view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
             ],
             label: Some("Painter Texture Bind Group"),
         });
@@ -263,23 +276,27 @@ impl Painter {
 
         let brush_uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Brush Uniform Buffer"),
-            contents: bytemuck::cast_slice(&[BrushUniforms { resolution: [width as f32, height as f32], padding: [0.0, 0.0] }]),
+            contents: bytemuck::cast_slice(&[BrushUniforms {
+                resolution: [width as f32, height as f32],
+                padding: [0.0, 0.0],
+            }]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let brush_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Brush Bind Group Layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
+        let brush_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Brush Bind Group Layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
 
         let brush_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Brush Bind Group"),
@@ -290,20 +307,37 @@ impl Painter {
             }],
         });
 
-        let brush_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Brush Pipeline Layout"),
-            bind_group_layouts: &[Some(&brush_bind_group_layout)],
-            immediate_size: 0,
-        });
+        let brush_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Brush Pipeline Layout"),
+                bind_group_layouts: &[Some(&brush_bind_group_layout)],
+                immediate_size: 0,
+            });
 
         let instance_desc = wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<StampInstance>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &[
-                wgpu::VertexAttribute { offset: 0, shader_location: 0, format: wgpu::VertexFormat::Float32x2 }, // position
-                wgpu::VertexAttribute { offset: 8, shader_location: 1, format: wgpu::VertexFormat::Float32x4 }, // color
-                wgpu::VertexAttribute { offset: 24, shader_location: 2, format: wgpu::VertexFormat::Float32 }, // radius
-                wgpu::VertexAttribute { offset: 28, shader_location: 3, format: wgpu::VertexFormat::Float32 }, // hardness
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x2,
+                }, // position
+                wgpu::VertexAttribute {
+                    offset: 8,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x4,
+                }, // color
+                wgpu::VertexAttribute {
+                    offset: 24,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32,
+                }, // radius
+                wgpu::VertexAttribute {
+                    offset: 28,
+                    shader_location: 3,
+                    format: wgpu::VertexFormat::Float32,
+                }, // hardness
             ],
         };
 
@@ -400,53 +434,64 @@ impl Painter {
             mapped_at_creation: false,
         });
 
-        let composite_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Composite Bind Group Layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+        let composite_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Composite Bind Group Layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2Array,
-                        multisampled: false,
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2Array,
+                            multisampled: false,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
 
         let composite_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Composite Bind Group"),
             layout: &composite_bind_group_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: composite_uniform_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&layer_array_view) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: composite_uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&layer_array_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
             ],
         });
 
-        let composite_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Composite Pipeline Layout"),
-            bind_group_layouts: &[Some(&composite_bind_group_layout)],
-            immediate_size: 0,
-        });
+        let composite_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Composite Pipeline Layout"),
+                bind_group_layouts: &[Some(&composite_bind_group_layout)],
+                immediate_size: 0,
+            });
 
         let composite_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Composite Pipeline"),
@@ -490,33 +535,35 @@ impl Painter {
             mapped_at_creation: false,
         });
 
-        let fill_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Fill Bind Group Layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
+        let fill_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Fill Bind Group Layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
 
-        let node_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-            label: Some("Painter Node Bind Group Layout"),
-        });
+        let node_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+                label: Some("Painter Node Bind Group Layout"),
+            });
 
         let fill_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Fill Pipeline Layout"),
@@ -561,25 +608,25 @@ impl Painter {
             height,
             layers: vec![default_layer],
             active_layer_idx: 0,
-            
+
             layer_array_texture,
             layer_views,
-            
+
             texture,
             composite_views,
             texture_view,
             sampler,
             bind_group,
-            
+
             brush_pipeline_add,
             brush_pipeline_sub,
             brush_uniform_buffer,
             brush_bind_group,
-            
+
             composite_pipeline,
             composite_uniform_buffer,
             composite_bind_group,
-            
+
             fill_pipeline,
             fill_uniform_buffer,
             fill_bind_group_layout,
@@ -595,7 +642,12 @@ impl Painter {
                 udim_tile: tile_idx as u32,
                 padding2: 0,
                 padding3: 0,
-                layers: [LayerInfo { opacity: 0.0, blend_mode: 0, visible: 0, padding: 0 }; 16],
+                layers: [LayerInfo {
+                    opacity: 0.0,
+                    blend_mode: 0,
+                    visible: 0,
+                    padding: 0,
+                }; 16],
             };
             for (i, layer) in self.layers.iter().enumerate() {
                 uniform_data.layers[i] = LayerInfo {
@@ -605,7 +657,11 @@ impl Painter {
                     padding: 0,
                 };
             }
-            queue.write_buffer(&self.composite_uniform_buffer, 0, bytemuck::cast_slice(&[uniform_data]));
+            queue.write_buffer(
+                &self.composite_uniform_buffer,
+                0,
+                bytemuck::cast_slice(&[uniform_data]),
+            );
 
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some(&format!("Composite Encoder Tile {}", tile_idx)),
@@ -641,19 +697,29 @@ impl Painter {
     }
 
     pub fn add_paint_layer(&mut self, name: String, device: &wgpu::Device, queue: &wgpu::Queue) {
-        if self.layers.len() >= MAX_LAYERS { return; }
+        if self.layers.len() >= MAX_LAYERS {
+            return;
+        }
         self.layers.push(Layer::new(name));
         self.active_layer_idx = self.layers.len() - 1;
         self.clear_layer(self.active_layer_idx, device, queue);
         self.compose_layers(device, queue);
     }
 
-    pub fn add_fill_layer(&mut self, name: String, device: &wgpu::Device, queue: &wgpu::Queue, document: &crate::mesh::Document) {
-        if self.layers.len() >= MAX_LAYERS { return; }
+    pub fn add_fill_layer(
+        &mut self,
+        name: String,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        document: &crate::mesh::Document,
+    ) {
+        if self.layers.len() >= MAX_LAYERS {
+            return;
+        }
         let layer = Layer::new_fill(name);
         self.layers.push(layer);
         self.active_layer_idx = self.layers.len() - 1;
-        
+
         let layer_ref = &self.layers[self.active_layer_idx];
         self.render_fill_layer(
             device,
@@ -679,41 +745,57 @@ impl Painter {
     }
 
     pub fn delete_layer(&mut self, index: usize, device: &wgpu::Device, queue: &wgpu::Queue) {
-        if self.layers.len() <= 1 { return; }
-        
+        if self.layers.len() <= 1 {
+            return;
+        }
+
         self.layers.remove(index);
         if self.active_layer_idx >= self.layers.len() {
             self.active_layer_idx = self.layers.len() - 1;
         }
-        
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         for i in index..self.layers.len() {
             for t in 0..MAX_UDIMS {
                 encoder.copy_texture_to_texture(
                     wgpu::TexelCopyTextureInfo {
                         texture: &self.layer_array_texture,
                         mip_level: 0,
-                        origin: wgpu::Origin3d { x: 0, y: 0, z: ((i + 1) * MAX_UDIMS + t) as u32 },
+                        origin: wgpu::Origin3d {
+                            x: 0,
+                            y: 0,
+                            z: ((i + 1) * MAX_UDIMS + t) as u32,
+                        },
                         aspect: wgpu::TextureAspect::All,
                     },
                     wgpu::TexelCopyTextureInfo {
                         texture: &self.layer_array_texture,
                         mip_level: 0,
-                        origin: wgpu::Origin3d { x: 0, y: 0, z: (i * MAX_UDIMS + t) as u32 },
+                        origin: wgpu::Origin3d {
+                            x: 0,
+                            y: 0,
+                            z: (i * MAX_UDIMS + t) as u32,
+                        },
                         aspect: wgpu::TextureAspect::All,
                     },
-                    wgpu::Extent3d { width: self.width, height: self.height, depth_or_array_layers: 1 },
+                    wgpu::Extent3d {
+                        width: self.width,
+                        height: self.height,
+                        depth_or_array_layers: 1,
+                    },
                 );
             }
         }
         queue.submit(std::iter::once(encoder.finish()));
-        
+
         self.clear_layer(self.layers.len(), device, queue);
         self.compose_layers(device, queue);
     }
-    
+
     pub fn clear_layer(&self, index: usize, device: &wgpu::Device, queue: &wgpu::Queue) {
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         for t in 0..MAX_UDIMS {
             let view_idx = index * MAX_UDIMS + t;
             let _rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -757,13 +839,17 @@ impl Painter {
 
         let layer_idx = self.layers.len();
         self.layers.push(Layer::new("UV Grid".to_string()));
-        
+
         // Write grid to UDIM 1001 (tile index 0)
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &self.layer_array_texture,
                 mip_level: 0,
-                origin: wgpu::Origin3d { x: 0, y: 0, z: (layer_idx * MAX_UDIMS) as u32 },
+                origin: wgpu::Origin3d {
+                    x: 0,
+                    y: 0,
+                    z: (layer_idx * MAX_UDIMS) as u32,
+                },
                 aspect: wgpu::TextureAspect::All,
             },
             &img,
@@ -772,11 +858,16 @@ impl Painter {
                 bytes_per_row: Some(4 * self.width),
                 rows_per_image: Some(self.height),
             },
-            wgpu::Extent3d { width: self.width, height: self.height, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: self.width,
+                height: self.height,
+                depth_or_array_layers: 1,
+            },
         );
 
         // Clear tiles 1002, 1003, 1004 to transparent for this layer
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         for t in 1..MAX_UDIMS {
             let view_idx = layer_idx * MAX_UDIMS + t;
             let _rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -840,31 +931,39 @@ impl Painter {
                         t + 1,
                         tried_names
                     );
-                    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+                    let mut encoder = device
+                        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
                     let view_idx = layer_idx * MAX_UDIMS + t;
-                    let _rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("Clear Missing Checker Tile"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: &self.layer_views[view_idx],
-                            resolve_target: None,
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                                store: wgpu::StoreOp::Store,
-                            },
-                            depth_slice: None,
-                        })],
-                        depth_stencil_attachment: None,
-                        occlusion_query_set: None,
-                        timestamp_writes: None,
-                        multiview_mask: None,
-                    }).forget_lifetime();
+                    let _rpass = encoder
+                        .begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("Clear Missing Checker Tile"),
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: &self.layer_views[view_idx],
+                                resolve_target: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                                    store: wgpu::StoreOp::Store,
+                                },
+                                depth_slice: None,
+                            })],
+                            depth_stencil_attachment: None,
+                            occlusion_query_set: None,
+                            timestamp_writes: None,
+                            multiview_mask: None,
+                        })
+                        .forget_lifetime();
                     queue.submit(std::iter::once(encoder.finish()));
                     continue;
                 }
             };
 
             let resized_img = if img.width() != self.width || img.height() != self.height {
-                image::imageops::resize(&img, self.width, self.height, image::imageops::FilterType::Triangle)
+                image::imageops::resize(
+                    &img,
+                    self.width,
+                    self.height,
+                    image::imageops::FilterType::Triangle,
+                )
             } else {
                 img
             };
@@ -873,7 +972,11 @@ impl Painter {
                 wgpu::TexelCopyTextureInfo {
                     texture: &self.layer_array_texture,
                     mip_level: 0,
-                    origin: wgpu::Origin3d { x: 0, y: 0, z: (layer_idx * MAX_UDIMS + t) as u32 },
+                    origin: wgpu::Origin3d {
+                        x: 0,
+                        y: 0,
+                        z: (layer_idx * MAX_UDIMS + t) as u32,
+                    },
                     aspect: wgpu::TextureAspect::All,
                 },
                 &resized_img,
@@ -882,7 +985,11 @@ impl Painter {
                     bytes_per_row: Some(4 * self.width),
                     rows_per_image: Some(self.height),
                 },
-                wgpu::Extent3d { width: self.width, height: self.height, depth_or_array_layers: 1 },
+                wgpu::Extent3d {
+                    width: self.width,
+                    height: self.height,
+                    depth_or_array_layers: 1,
+                },
             );
         }
 
@@ -890,7 +997,8 @@ impl Painter {
     }
 
     pub fn clear_all_layers(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         for i in 0..self.layers.len() {
             self.layers[i].strokes.clear();
             for t in 0..MAX_UDIMS {
@@ -939,7 +1047,11 @@ impl Painter {
                 udim_tile: t as u32,
                 padding: 0,
             };
-            queue.write_buffer(&self.fill_uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
+            queue.write_buffer(
+                &self.fill_uniform_buffer,
+                0,
+                bytemuck::cast_slice(&[uniforms]),
+            );
 
             let fill_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("Fill Bind Group"),
@@ -951,7 +1063,10 @@ impl Painter {
             });
 
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some(&format!("Fill Render Encoder Layer {} Tile {}", layer_idx, t)),
+                label: Some(&format!(
+                    "Fill Render Encoder Layer {} Tile {}",
+                    layer_idx, t
+                )),
             });
 
             {
@@ -982,7 +1097,10 @@ impl Painter {
                         rpass.set_bind_group(1, &node.bind_group, &[]);
                         for primitive in &mesh.primitives {
                             rpass.set_vertex_buffer(0, primitive.vertex_buffer.slice(..));
-                            rpass.set_index_buffer(primitive.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                            rpass.set_index_buffer(
+                                primitive.index_buffer.slice(..),
+                                wgpu::IndexFormat::Uint32,
+                            );
                             rpass.draw_indexed(0..primitive.num_indices, 0, 0..1);
                         }
                     }
@@ -1007,7 +1125,7 @@ impl Painter {
         num_udim_tiles: u32,
     ) {
         let total_start = std::time::Instant::now();
-        
+
         let color_f32 = [
             color[0] as f32 / 255.0,
             color[1] as f32 / 255.0,
@@ -1080,7 +1198,7 @@ impl Painter {
         };
 
         let accum_start = std::time::Instant::now();
-        
+
         let is_wrap = if let (Some(f3d), Some(t3d)) = (from_3d, to_3d) {
             let dist_3d = f3d.distance(t3d);
             let dist_uv = (to.x - from.x).abs();
@@ -1096,7 +1214,8 @@ impl Painter {
         }
 
         let from_px = from * glam::Vec2::new(self.width as f32, self.height as f32);
-        let to_px_effective = (from + glam::Vec2::new(dx, dy)) * glam::Vec2::new(self.width as f32, self.height as f32);
+        let to_px_effective = (from + glam::Vec2::new(dx, dy))
+            * glam::Vec2::new(self.width as f32, self.height as f32);
         let dist = from_px.distance(to_px_effective);
 
         let step_size = (radius * 0.1).max(1.0);
@@ -1117,7 +1236,9 @@ impl Painter {
         let render_start = std::time::Instant::now();
         for t in 0..MAX_UDIMS {
             let stamps = &tile_stamps[t];
-            if stamps.is_empty() { continue; }
+            if stamps.is_empty() {
+                continue;
+            }
 
             let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some(&format!("Brush Instance Buffer Tile {}", t)),
@@ -1147,7 +1268,11 @@ impl Painter {
                     timestamp_writes: None,
                     multiview_mask: None,
                 });
-                rpass.set_pipeline(if is_eraser { &self.brush_pipeline_sub } else { &self.brush_pipeline_add });
+                rpass.set_pipeline(if is_eraser {
+                    &self.brush_pipeline_sub
+                } else {
+                    &self.brush_pipeline_add
+                });
                 rpass.set_bind_group(0, &self.brush_bind_group, &[]);
                 rpass.set_vertex_buffer(0, instance_buffer.slice(..));
                 rpass.draw(0..4, 0..stamps.len() as u32);
@@ -1155,7 +1280,7 @@ impl Painter {
             queue.submit(std::iter::once(encoder.finish()));
         }
         let render_duration = render_start.elapsed();
-        
+
         let compose_start = std::time::Instant::now();
         self.compose_layers(device, queue);
         let compose_duration = compose_start.elapsed();
@@ -1205,7 +1330,9 @@ impl Painter {
         stroke: &PaintStroke,
         num_udim_tiles: u32,
     ) {
-        if stroke.uv_points.is_empty() { return; }
+        if stroke.uv_points.is_empty() {
+            return;
+        }
 
         let rgb = [
             stroke.color[0] as f32 / 255.0,
@@ -1278,15 +1405,28 @@ impl Painter {
         };
 
         let point_radius = |idx: usize| -> f32 {
-            stroke.point_radii.get(idx).copied().unwrap_or(stroke.radius)
+            stroke
+                .point_radii
+                .get(idx)
+                .copied()
+                .unwrap_or(stroke.radius)
         };
         let point_alpha = |idx: usize| -> u8 {
-            stroke.point_alphas.get(idx).copied().unwrap_or(stroke.color[3])
+            stroke
+                .point_alphas
+                .get(idx)
+                .copied()
+                .unwrap_or(stroke.color[3])
         };
 
         let points_count = stroke.uv_points.len();
         if points_count == 1 {
-            add_stamp_udim(stroke.uv_points[0].x, stroke.uv_points[0].y, point_radius(0), point_alpha(0));
+            add_stamp_udim(
+                stroke.uv_points[0].x,
+                stroke.uv_points[0].y,
+                point_radius(0),
+                point_alpha(0),
+            );
         } else {
             for i in 0..points_count - 1 {
                 let from = stroke.uv_points[i];
@@ -1313,7 +1453,8 @@ impl Painter {
                 }
 
                 let from_px = from * glam::Vec2::new(self.width as f32, self.height as f32);
-                let to_px_effective = (from + glam::Vec2::new(dx, dy)) * glam::Vec2::new(self.width as f32, self.height as f32);
+                let to_px_effective = (from + glam::Vec2::new(dx, dy))
+                    * glam::Vec2::new(self.width as f32, self.height as f32);
                 let dist = from_px.distance(to_px_effective);
 
                 let avg_radius = 0.5 * (from_radius + to_radius);
@@ -1328,7 +1469,9 @@ impl Painter {
                         let x = from.x + dx * t;
                         let y = from.y + dy * t;
                         let radius = from_radius + (to_radius - from_radius) * t;
-                        let alpha = (from_alpha + (to_alpha - from_alpha) * t).round().clamp(0.0, 255.0) as u8;
+                        let alpha = (from_alpha + (to_alpha - from_alpha) * t)
+                            .round()
+                            .clamp(0.0, 255.0) as u8;
                         add_stamp_udim(x, y, radius, alpha);
                     }
                 }
@@ -1337,10 +1480,15 @@ impl Painter {
 
         for t in 0..MAX_UDIMS {
             let stamps = &tile_stamps[t];
-            if stamps.is_empty() { continue; }
+            if stamps.is_empty() {
+                continue;
+            }
 
             let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some(&format!("Brush Instance Buffer Layer {} Tile {}", layer_idx, t)),
+                label: Some(&format!(
+                    "Brush Instance Buffer Layer {} Tile {}",
+                    layer_idx, t
+                )),
                 contents: bytemuck::cast_slice(stamps),
                 usage: wgpu::BufferUsages::VERTEX,
             });
@@ -1367,7 +1515,11 @@ impl Painter {
                     timestamp_writes: None,
                     multiview_mask: None,
                 });
-                rpass.set_pipeline(if stroke.is_eraser { &self.brush_pipeline_sub } else { &self.brush_pipeline_add });
+                rpass.set_pipeline(if stroke.is_eraser {
+                    &self.brush_pipeline_sub
+                } else {
+                    &self.brush_pipeline_add
+                });
                 rpass.set_bind_group(0, &self.brush_bind_group, &[]);
                 rpass.set_vertex_buffer(0, instance_buffer.slice(..));
                 rpass.draw(0..4, 0..stamps.len() as u32);
@@ -1378,11 +1530,18 @@ impl Painter {
 
     pub fn reproject_strokes(&mut self, document: &crate::mesh::Document) {
         let nodes = document.get_active_nodes();
-        let total_strokes: usize = self.layers.iter().map(|l| if l.is_fill { 0 } else { l.strokes.len() }).sum();
+        let total_strokes: usize = self
+            .layers
+            .iter()
+            .map(|l| if l.is_fill { 0 } else { l.strokes.len() })
+            .sum();
         let mut current_stroke_idx = 0;
         let start_time = std::time::Instant::now();
-        
-        log::info!("Starting synchronous reprojection of {} strokes...", total_strokes);
+
+        log::info!(
+            "Starting synchronous reprojection of {} strokes...",
+            total_strokes
+        );
 
         let mut triangles = Vec::new();
         for (node, world_matrix) in &nodes {
@@ -1392,26 +1551,30 @@ impl Painter {
                         let i0 = chunk[0] as usize;
                         let i1 = chunk[1] as usize;
                         let i2 = chunk[2] as usize;
-                        
+
                         let v0 = &primitive.vertices[i0];
                         let v1 = &primitive.vertices[i1];
                         let v2 = &primitive.vertices[i2];
-                        
+
                         let p0 = world_matrix.transform_point3(glam::Vec3::from(v0.position));
                         let p1 = world_matrix.transform_point3(glam::Vec3::from(v1.position));
                         let p2 = world_matrix.transform_point3(glam::Vec3::from(v2.position));
-                        
+
                         let uv0 = glam::Vec2::from(v0.tex_coords);
                         let uv1 = glam::Vec2::from(v1.tex_coords);
                         let uv2 = glam::Vec2::from(v2.tex_coords);
-                        
+
                         let center = (p0 + p1 + p2) / 3.0;
                         let bounds_min = p0.min(p1).min(p2);
                         let bounds_max = p0.max(p1).max(p2);
-                        
+
                         triangles.push(WorldTriangle {
-                            p0, p1, p2,
-                            uv0, uv1, uv2,
+                            p0,
+                            p1,
+                            p2,
+                            uv0,
+                            uv1,
+                            uv2,
                             center,
                             bounds_min,
                             bounds_max,
@@ -1423,7 +1586,9 @@ impl Painter {
 
         if triangles.is_empty() {
             for layer in &mut self.layers {
-                if layer.is_fill { continue; }
+                if layer.is_fill {
+                    continue;
+                }
                 for stroke in &mut layer.strokes {
                     stroke.uv_points.clear();
                     for _ in &stroke.points {
@@ -1431,19 +1596,24 @@ impl Painter {
                     }
                 }
             }
-            log::info!("Completed synchronous reprojection of strokes (no geometry) in {:?}", start_time.elapsed());
+            log::info!(
+                "Completed synchronous reprojection of strokes (no geometry) in {:?}",
+                start_time.elapsed()
+            );
             return;
         }
 
         let bvh = BVHNode::build(triangles);
-        
+
         for (layer_idx, layer) in self.layers.iter_mut().enumerate() {
-            if layer.is_fill { continue; }
+            if layer.is_fill {
+                continue;
+            }
             for stroke in &mut layer.strokes {
                 current_stroke_idx += 1;
                 let stroke_start = std::time::Instant::now();
                 stroke.uv_points.clear();
-                
+
                 for pt in &stroke.points {
                     let mut closest_uv = glam::Vec2::ZERO;
                     let mut min_dist_sq = f32::MAX;
@@ -1460,7 +1630,10 @@ impl Painter {
                 );
             }
         }
-        log::info!("Completed synchronous reprojection of strokes in {:?}", start_time.elapsed());
+        log::info!(
+            "Completed synchronous reprojection of strokes in {:?}",
+            start_time.elapsed()
+        );
     }
 
     pub fn reproject_strokes_in_background(
@@ -1473,7 +1646,10 @@ impl Painter {
         let mut current_stroke_idx = 0;
         let start_time = std::time::Instant::now();
 
-        log::info!("Starting background reprojection of {} strokes...", total_strokes);
+        log::info!(
+            "Starting background reprojection of {} strokes...",
+            total_strokes
+        );
 
         let mut triangles = Vec::new();
         for (node, world_matrix) in &nodes {
@@ -1483,26 +1659,30 @@ impl Painter {
                         let i0 = chunk[0] as usize;
                         let i1 = chunk[1] as usize;
                         let i2 = chunk[2] as usize;
-                        
+
                         let v0 = &primitive.vertices[i0];
                         let v1 = &primitive.vertices[i1];
                         let v2 = &primitive.vertices[i2];
-                        
+
                         let p0 = world_matrix.transform_point3(glam::Vec3::from(v0.position));
                         let p1 = world_matrix.transform_point3(glam::Vec3::from(v1.position));
                         let p2 = world_matrix.transform_point3(glam::Vec3::from(v2.position));
-                        
+
                         let uv0 = glam::Vec2::from(v0.tex_coords);
                         let uv1 = glam::Vec2::from(v1.tex_coords);
                         let uv2 = glam::Vec2::from(v2.tex_coords);
-                        
+
                         let center = (p0 + p1 + p2) / 3.0;
                         let bounds_min = p0.min(p1).min(p2);
                         let bounds_max = p0.max(p1).max(p2);
-                        
+
                         triangles.push(WorldTriangle {
-                            p0, p1, p2,
-                            uv0, uv1, uv2,
+                            p0,
+                            p1,
+                            p2,
+                            uv0,
+                            uv1,
+                            uv2,
                             center,
                             bounds_min,
                             bounds_max,
@@ -1521,34 +1701,36 @@ impl Painter {
                     }
                 }
             }
-            log::info!("Completed background reprojection of strokes (no geometry) in {:?}", start_time.elapsed());
+            log::info!(
+                "Completed background reprojection of strokes (no geometry) in {:?}",
+                start_time.elapsed()
+            );
             return;
         }
 
         let bvh = BVHNode::build(triangles);
-        
+
         for (layer_idx, layer_strokes) in strokes.iter_mut().enumerate() {
             for (stroke_idx, stroke) in layer_strokes.iter_mut().enumerate() {
                 current_stroke_idx += 1;
                 let msg = format!(
                     "Reprojecting paint strokes ({}/{}) on new geometry...",
-                    current_stroke_idx,
-                    total_strokes
+                    current_stroke_idx, total_strokes
                 );
                 if let Ok(mut lock) = status.lock() {
                     *lock = msg;
                 }
-                
+
                 let stroke_start = std::time::Instant::now();
                 stroke.uv_points.clear();
-                
+
                 for pt in &stroke.points {
                     let mut closest_uv = glam::Vec2::ZERO;
                     let mut min_dist_sq = f32::MAX;
                     bvh.find_closest(*pt, &mut min_dist_sq, &mut closest_uv);
                     stroke.uv_points.push(closest_uv);
                 }
-                
+
                 log::debug!(
                     "  Stroke {} on Layer {} ({} points) reprojected in {:?}",
                     stroke_idx,
@@ -1558,8 +1740,11 @@ impl Painter {
                 );
             }
         }
-        
-        log::info!("Completed background reprojection of strokes in {:?}", start_time.elapsed());
+
+        log::info!(
+            "Completed background reprojection of strokes in {:?}",
+            start_time.elapsed()
+        );
     }
 
     pub fn redraw_all_layers(
@@ -1569,7 +1754,8 @@ impl Painter {
         document: &crate::mesh::Document,
     ) {
         // Clear all layers on the GPU first
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         for i in 0..self.layers.len() {
             for t in 0..MAX_UDIMS {
                 let view_idx = i * MAX_UDIMS + t;
@@ -1620,11 +1806,17 @@ impl Painter {
             } else {
                 let strokes = self.layers[idx].strokes.clone();
                 for stroke in &strokes {
-                    self.paint_stroke_udim_to_layer(device, queue, idx, stroke, document.num_udim_tiles);
+                    self.paint_stroke_udim_to_layer(
+                        device,
+                        queue,
+                        idx,
+                        stroke,
+                        document.num_udim_tiles,
+                    );
                 }
             }
         }
-        
+
         self.compose_layers(device, queue);
     }
 
@@ -1645,22 +1837,27 @@ impl Painter {
             let unpadded_bytes_per_row = self.width * 4;
             let padding = (align - unpadded_bytes_per_row % align) % align;
             let padded_bytes_per_row = unpadded_bytes_per_row + padding;
-            
+
             let buffer_size = (padded_bytes_per_row * self.height) as wgpu::BufferAddress;
-            
+
             let buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(&format!("Export Buffer Tile {}", udim_num)),
                 size: buffer_size,
                 usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            
-            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+
+            let mut encoder =
+                device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
             encoder.copy_texture_to_buffer(
                 wgpu::TexelCopyTextureInfo {
                     texture: &self.texture,
                     mip_level: 0,
-                    origin: wgpu::Origin3d { x: 0, y: 0, z: tile_idx as u32 },
+                    origin: wgpu::Origin3d {
+                        x: 0,
+                        y: 0,
+                        z: tile_idx as u32,
+                    },
                     aspect: wgpu::TextureAspect::All,
                 },
                 wgpu::TexelCopyBufferInfo {
@@ -1671,18 +1868,22 @@ impl Painter {
                         rows_per_image: Some(self.height),
                     },
                 },
-                wgpu::Extent3d { width: self.width, height: self.height, depth_or_array_layers: 1 },
+                wgpu::Extent3d {
+                    width: self.width,
+                    height: self.height,
+                    depth_or_array_layers: 1,
+                },
             );
             queue.submit(std::iter::once(encoder.finish()));
-            
+
             let buffer_slice = buffer.slice(..);
             let (tx, rx) = std::sync::mpsc::channel();
             buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
                 let _ = tx.send(result);
             });
-            
+
             device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-            
+
             if let Ok(Ok(())) = rx.recv() {
                 let padded_data = buffer_slice.get_mapped_range();
                 let mut unpadded_data = Vec::with_capacity((self.width * self.height * 4) as usize);
@@ -1691,8 +1892,14 @@ impl Painter {
                 }
                 drop(padded_data);
                 buffer.unmap();
-                
-                if let Err(e) = image::save_buffer(&export_path, &unpadded_data, self.width, self.height, image::ColorType::Rgba8) {
+
+                if let Err(e) = image::save_buffer(
+                    &export_path,
+                    &unpadded_data,
+                    self.width,
+                    self.height,
+                    image::ColorType::Rgba8,
+                ) {
                     log::error!("Failed to export UDIM texture {}: {:?}", udim_num, e);
                 } else {
                     log::info!("Successfully exported UDIM texture to {}", export_path);
@@ -1703,49 +1910,54 @@ impl Painter {
 }
 
 // Closest point on a triangle ABC to point P (computes barycentric coordinates)
-fn closest_point_on_triangle(p: glam::Vec3, a: glam::Vec3, b: glam::Vec3, c: glam::Vec3) -> (glam::Vec3, [f32; 3]) {
+fn closest_point_on_triangle(
+    p: glam::Vec3,
+    a: glam::Vec3,
+    b: glam::Vec3,
+    c: glam::Vec3,
+) -> (glam::Vec3, [f32; 3]) {
     let ab = b - a;
     let ac = c - a;
     let ap = p - a;
-    
+
     let d1 = ab.dot(ap);
     let d2 = ac.dot(ap);
     if d1 <= 0.0 && d2 <= 0.0 {
         return (a, [1.0, 0.0, 0.0]);
     }
-    
+
     let bp = p - b;
     let d3 = ab.dot(bp);
     let d4 = ac.dot(bp);
     if d3 >= 0.0 && d4 <= d3 {
         return (b, [0.0, 1.0, 0.0]);
     }
-    
+
     let vc = d1 * d4 - d3 * d2;
     if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
         let v = d1 / (d1 - d3);
         return (a + v * ab, [1.0 - v, v, 0.0]);
     }
-    
+
     let cp = p - c;
     let d5 = ab.dot(cp);
     let d6 = ac.dot(cp);
     if d6 >= 0.0 && d5 <= d6 {
         return (c, [0.0, 0.0, 1.0]);
     }
-    
+
     let vb = d5 * d2 - d1 * d6;
     if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
         let w = d2 / (d2 - d6);
         return (a + w * ac, [1.0 - w, 0.0, w]);
     }
-    
+
     let va = d3 * d6 - d5 * d4;
     if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
         let w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
         return (b + w * (c - b), [0.0, 1.0 - w, w]);
     }
-    
+
     let denom = 1.0 / (va + vb + vc);
     let v = vb * denom;
     let w = vc * denom;
@@ -1842,7 +2054,9 @@ impl BVHNode {
                 1 => b.center.y,
                 _ => b.center.z,
             };
-            val_a.partial_cmp(&val_b).unwrap_or(std::cmp::Ordering::Equal)
+            val_a
+                .partial_cmp(&val_b)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
 
         let right_triangles = triangles.split_off(mid);
@@ -1859,12 +2073,7 @@ impl BVHNode {
         }
     }
 
-    fn find_closest(
-        &self,
-        pt: glam::Vec3,
-        min_dist_sq: &mut f32,
-        closest_uv: &mut glam::Vec2,
-    ) {
+    fn find_closest(&self, pt: glam::Vec3, min_dist_sq: &mut f32, closest_uv: &mut glam::Vec2) {
         if *min_dist_sq < 1e-6 {
             return;
         }

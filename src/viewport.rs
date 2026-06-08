@@ -1,17 +1,17 @@
-use wgpu::util::DeviceExt;
-use glam::{Mat4, Vec3};
 use crate::mesh::Vertex;
+use glam::{Mat4, Vec3};
 use std::sync::Arc;
+use wgpu::util::DeviceExt;
 
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 pub struct Camera {
     pub target: Vec3,
-    pub yaw: f32,       // in radians
-    pub pitch: f32,     // in radians
+    pub yaw: f32,   // in radians
+    pub pitch: f32, // in radians
     pub distance: f32,
     pub aspect: f32,
-    pub fovy: f32,      // in radians
+    pub fovy: f32, // in radians
     pub znear: f32,
     pub zfar: f32,
 }
@@ -21,7 +21,7 @@ impl Camera {
         Self {
             target: Vec3::new(0.0, 0.0, 0.0),
             yaw: std::f32::consts::FRAC_PI_4, // 45 degrees
-            pitch: 0.25,                     // slightly looking down
+            pitch: 0.25,                      // slightly looking down
             distance: 4.5,
             aspect,
             fovy: std::f32::consts::FRAC_PI_4, // 45 degrees fov
@@ -92,7 +92,7 @@ impl CameraUniform {
         self.view_proj = camera.build_view_projection_matrix().to_cols_array_2d();
         let eye = camera.get_eye();
         self.view_position = [eye.x, eye.y, eye.z, 1.0];
-        
+
         // Rotate light around Y axis
         let lx = light_angle.cos();
         let lz = light_angle.sin();
@@ -168,8 +168,8 @@ impl Viewport {
         });
 
         // Setup node uniform bind group layout
-        let node_bind_group_layout = Arc::new(
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let node_bind_group_layout = Arc::new(device.create_bind_group_layout(
+            &wgpu::BindGroupLayoutDescriptor {
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::VERTEX,
@@ -181,11 +181,12 @@ impl Viewport {
                     count: None,
                 }],
                 label: Some("Node Bind Group Layout"),
-            })
-        );
+            },
+        ));
 
         // Generate procedural sphere document
-        let document = crate::mesh::create_sphere_document(device, &node_bind_group_layout, 1.5, 32, 32);
+        let document =
+            crate::mesh::create_sphere_document(device, &node_bind_group_layout, 1.5, 32, 32);
 
         // Load shader
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -282,7 +283,11 @@ impl Viewport {
             self.exposure,
             num_tiles,
         );
-        queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[self.camera_uniform]));
+        queue.write_buffer(
+            &self.camera_buffer,
+            0,
+            bytemuck::cast_slice(&[self.camera_uniform]),
+        );
     }
 
     pub fn update_node_transforms(&self, queue: &wgpu::Queue) {
@@ -338,7 +343,10 @@ impl Viewport {
                 render_pass.set_bind_group(2, &node.bind_group, &[]);
                 for primitive in &mesh.primitives {
                     render_pass.set_vertex_buffer(0, primitive.vertex_buffer.slice(..));
-                    render_pass.set_index_buffer(primitive.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                    render_pass.set_index_buffer(
+                        primitive.index_buffer.slice(..),
+                        wgpu::IndexFormat::Uint32,
+                    );
                     render_pass.draw_indexed(0..primitive.num_indices, 0, 0..1);
                 }
             }

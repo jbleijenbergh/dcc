@@ -1,4 +1,4 @@
-use glam::{Vec2, Vec3, Vec4, Mat4, Vec4Swizzles};
+use glam::{Mat4, Vec2, Vec3, Vec4, Vec4Swizzles};
 
 pub struct Ray {
     pub origin: Vec3,
@@ -6,12 +6,7 @@ pub struct Ray {
 }
 
 impl Ray {
-    pub fn from_screen(
-        mouse_pos: Vec2,
-        screen_size: Vec2,
-        view: Mat4,
-        proj: Mat4,
-    ) -> Self {
+    pub fn from_screen(mouse_pos: Vec2, screen_size: Vec2, view: Mat4, proj: Mat4) -> Self {
         // Convert screen coordinates to Normalized Device Coordinates (NDC)
         // NDC X range: [-1.0, 1.0], Y range: [-1.0, 1.0] (Y is positive up)
         let ndc_x = (2.0 * mouse_pos.x) / screen_size.x - 1.0;
@@ -44,10 +39,7 @@ pub struct RaycastHit {
     pub point: Vec3,
 }
 
-pub fn intersect_document(
-    ray: &Ray,
-    document: &crate::mesh::Document,
-) -> Option<RaycastHit> {
+pub fn intersect_document(ray: &Ray, document: &crate::mesh::Document) -> Option<RaycastHit> {
     let mut closest_hit: Option<RaycastHit> = None;
 
     let nodes = document.get_active_nodes();
@@ -176,12 +168,7 @@ pub fn intersect_primitive(
     closest_hit
 }
 
-pub fn intersect_triangle(
-    ray: &Ray,
-    p0: Vec3,
-    p1: Vec3,
-    p2: Vec3,
-) -> Option<(f32, f32, f32)> {
+pub fn intersect_triangle(ray: &Ray, p0: Vec3, p1: Vec3, p2: Vec3) -> Option<(f32, f32, f32)> {
     // Möller-Trumbore intersection algorithm
     let e1 = p1 - p0;
     let e2 = p2 - p0;
@@ -301,4 +288,3 @@ mod tests {
         }
     }
 }
-

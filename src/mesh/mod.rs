@@ -1,10 +1,10 @@
 mod geometry;
-mod uv_projector;
 mod gltf_loader;
+mod uv_projector;
 
 pub use geometry::{
-    Vertex, Primitive, Mesh, Node, Document,
-    create_sphere_document, create_cube_document, create_plane_document,
+    create_cube_document, create_plane_document, create_sphere_document, Document, Mesh, Node,
+    Primitive, Vertex,
 };
-pub use uv_projector::{ImportSettings, SeamsOption, MarginSize, IslandOrientation};
-pub use gltf_loader::{MaterialInfo, load_gltf};
+pub use gltf_loader::{load_gltf, MaterialInfo};
+pub use uv_projector::{ImportSettings, IslandOrientation, MarginSize, SeamsOption};

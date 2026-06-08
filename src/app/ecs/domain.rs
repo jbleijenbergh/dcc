@@ -145,15 +145,11 @@ pub fn apply_input_state_event_to_app_state(
                 KeyCode::ControlLeft | KeyCode::ControlRight => {
                     app_state.input_mut().ctrl = *is_pressed
                 }
-                KeyCode::SuperLeft | KeyCode::SuperRight => {
-                    app_state.input_mut().cmd = *is_pressed
-                }
+                KeyCode::SuperLeft | KeyCode::SuperRight => app_state.input_mut().cmd = *is_pressed,
                 KeyCode::ShiftLeft | KeyCode::ShiftRight => {
                     app_state.input_mut().shift = *is_pressed
                 }
-                KeyCode::AltLeft | KeyCode::AltRight => {
-                    app_state.input_mut().alt = *is_pressed
-                }
+                KeyCode::AltLeft | KeyCode::AltRight => app_state.input_mut().alt = *is_pressed,
                 _ => {}
             }
         }
@@ -254,8 +250,7 @@ pub fn apply_ui_event(state: &mut State, ui_action: &UiActionEvent) {
         | UiActionEvent::SetUvViewerSize(_)
         | UiActionEvent::SetUvWireframe(_)
         | UiActionEvent::SetCurrentMesh(_)
-        | UiActionEvent::StartGltfLoad
-        => {}
+        | UiActionEvent::StartGltfLoad => {}
         UiActionEvent::SwitchMesh(mesh) => {
             state.push_undo_state();
             state.toggle_mesh(mesh);
@@ -316,11 +311,15 @@ pub fn apply_ui_event(state: &mut State, ui_action: &UiActionEvent) {
         }
         UiActionEvent::AddUvGridLayer => {
             state.push_undo_state();
-            state.painter.load_uv_grid_layer(&state.device, &state.queue);
+            state
+                .painter
+                .load_uv_grid_layer(&state.device, &state.queue);
         }
         UiActionEvent::AddUvCheckerLayer => {
             state.push_undo_state();
-            state.painter.load_uv_checker_layer(&state.device, &state.queue);
+            state
+                .painter
+                .load_uv_checker_layer(&state.device, &state.queue);
         }
         UiActionEvent::AddFillLayer => {
             state.push_undo_state();
@@ -335,7 +334,9 @@ pub fn apply_ui_event(state: &mut State, ui_action: &UiActionEvent) {
         UiActionEvent::DeleteLayer(idx) => {
             if state.painter.layers.len() > 1 && *idx < state.painter.layers.len() {
                 state.push_undo_state();
-                state.painter.delete_layer(*idx, &state.device, &state.queue);
+                state
+                    .painter
+                    .delete_layer(*idx, &state.device, &state.queue);
             }
         }
         UiActionEvent::SetLayerVisible { idx, visible } => {

@@ -34,7 +34,12 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, window_id: WindowId, event: WindowEvent) {
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window_id: WindowId,
+        event: WindowEvent,
+    ) {
         if let Some(ref mut state) = self.state {
             if window_id == state.window.id() {
                 if state.input(&event) {
@@ -112,13 +117,14 @@ impl ApplicationHandler for App {
 }
 
 fn main() {
-    env_logger::init_from_env(env_logger::Env::default().default_filter_or("info,wgpu_hal::vulkan::conv=error"));
+    env_logger::init_from_env(
+        env_logger::Env::default().default_filter_or("info,wgpu_hal::vulkan::conv=error"),
+    );
     log::info!("Starting Antigravity DCC Painter...");
 
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Wait);
-    
+
     let mut app = App { state: None };
     event_loop.run_app(&mut app).unwrap();
 }
-

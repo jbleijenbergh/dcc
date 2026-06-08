@@ -145,8 +145,12 @@ impl UserPreferences {
 
     pub fn save_to(&self, path: &PathBuf) -> Result<(), String> {
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create settings directory {}: {e}", parent.display()))?;
+            fs::create_dir_all(parent).map_err(|e| {
+                format!(
+                    "Failed to create settings directory {}: {e}",
+                    parent.display()
+                )
+            })?;
         }
 
         let toml = toml::to_string_pretty(self)
@@ -156,7 +160,6 @@ impl UserPreferences {
             .map_err(|e| format!("Failed to write settings file {}: {e}", path.display()))
     }
 }
-
 
 pub const KEY_CHOICES: &[&str] = &[
     "Space",

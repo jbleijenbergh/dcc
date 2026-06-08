@@ -1,12 +1,12 @@
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
-use winit::keyboard::{PhysicalKey, KeyCode};
+use winit::keyboard::{KeyCode, PhysicalKey};
 
-use crate::app::ecs::events::{
-    AppEvent, DocumentCommandEvent, InputStateCommandEvent, ToolCommandEvent, ToolKind, UiActionEvent,
-    ViewportCommandEvent,
-};
 use crate::app::app_state::InputSnapshot;
+use crate::app::ecs::events::{
+    AppEvent, DocumentCommandEvent, InputStateCommandEvent, ToolCommandEvent, ToolKind,
+    UiActionEvent, ViewportCommandEvent,
+};
 
 pub type PointerId = u64;
 
@@ -111,7 +111,11 @@ fn parse_mouse_button(button: &str) -> Option<MouseButton> {
     }
 }
 
-fn binding_matches_key(input: &InputSnapshot, binding: &crate::app::user_preferences::KeyBinding, key: KeyCode) -> bool {
+fn binding_matches_key(
+    input: &InputSnapshot,
+    binding: &crate::app::user_preferences::KeyBinding,
+    key: KeyCode,
+) -> bool {
     let Some(expected) = parse_key_code(&binding.key) else {
         return false;
     };
@@ -142,7 +146,10 @@ fn binding_matches_key(input: &InputSnapshot, binding: &crate::app::user_prefere
     true
 }
 
-fn binding_matches_mouse(binding: &crate::app::user_preferences::MouseBinding, button: MouseButton) -> bool {
+fn binding_matches_mouse(
+    binding: &crate::app::user_preferences::MouseBinding,
+    button: MouseButton,
+) -> bool {
     parse_mouse_button(&binding.button).map_or(false, |expected| expected == button)
 }
 
@@ -218,9 +225,9 @@ pub fn normalize_window_event(
             );
 
             if *stage > 0 {
-                out.push(AppEvent::InputState(InputStateCommandEvent::UpdateMousePosition(
-                    pressure_pointer,
-                )));
+                out.push(AppEvent::InputState(
+                    InputStateCommandEvent::UpdateMousePosition(pressure_pointer),
+                ));
                 if input.paint_button_down {
                     if input.orbit_modifier || input.alt {
                         out.push(AppEvent::Viewport(ViewportCommandEvent::Orbit {
@@ -228,14 +235,18 @@ pub fn normalize_window_event(
                             dy: 0.0,
                         }));
                     } else {
-                        out.push(AppEvent::Tool(ToolCommandEvent::PointerMove(pressure_pointer)));
+                        out.push(AppEvent::Tool(ToolCommandEvent::PointerMove(
+                            pressure_pointer,
+                        )));
                     }
                 }
             } else {
-                out.push(AppEvent::InputState(InputStateCommandEvent::UpdateMousePosition(
-                    pressure_pointer,
-                )));
-                out.push(AppEvent::InputState(InputStateCommandEvent::ResetPenPressure));
+                out.push(AppEvent::InputState(
+                    InputStateCommandEvent::UpdateMousePosition(pressure_pointer),
+                ));
+                out.push(AppEvent::InputState(
+                    InputStateCommandEvent::ResetPenPressure,
+                ));
             }
         }
         WindowEvent::Touch(touch) => {
@@ -262,16 +273,16 @@ pub fn normalize_window_event(
 
             match touch.phase {
                 TouchPhase::Started => {
-                    out.push(AppEvent::InputState(InputStateCommandEvent::UpdateMousePosition(
-                        pointer,
-                    )));
+                    out.push(AppEvent::InputState(
+                        InputStateCommandEvent::UpdateMousePosition(pointer),
+                    ));
                     if binding_matches_mouse(
                         &bindings.paint_button,
                         winit::event::MouseButton::Left,
                     ) {
-                        out.push(AppEvent::InputState(InputStateCommandEvent::SetPaintButtonDown(
-                            true,
-                        )));
+                        out.push(AppEvent::InputState(
+                            InputStateCommandEvent::SetPaintButtonDown(true),
+                        ));
                         if !input.orbit_modifier && !input.alt {
                             out.push(AppEvent::Tool(ToolCommandEvent::PointerDown(pointer)));
                         }
@@ -283,37 +294,41 @@ pub fn normalize_window_event(
                     let mut pointer_with_delta = pointer;
                     pointer_with_delta.delta = glam::Vec2::new(dx, dy);
 
-                    out.push(AppEvent::InputState(InputStateCommandEvent::UpdateMousePosition(
-                        pointer_with_delta,
-                    )));
+                    out.push(AppEvent::InputState(
+                        InputStateCommandEvent::UpdateMousePosition(pointer_with_delta),
+                    ));
 
                     if input.paint_button_down {
                         if input.orbit_modifier || input.alt {
                             out.push(AppEvent::Viewport(ViewportCommandEvent::Orbit { dx, dy }));
                         } else {
-                            out.push(AppEvent::Tool(ToolCommandEvent::PointerMove(pointer_with_delta)));
+                            out.push(AppEvent::Tool(ToolCommandEvent::PointerMove(
+                                pointer_with_delta,
+                            )));
                         }
                     } else if input.pan_button_down {
                         out.push(AppEvent::Viewport(ViewportCommandEvent::Pan { dx, dy }));
                     }
                 }
                 TouchPhase::Ended => {
-                    out.push(AppEvent::InputState(InputStateCommandEvent::UpdateMousePosition(
-                        pointer,
-                    )));
-                    out.push(AppEvent::InputState(InputStateCommandEvent::SetPaintButtonDown(
-                        false,
-                    )));
-                    out.push(AppEvent::InputState(InputStateCommandEvent::ResetPenPressure));
+                    out.push(AppEvent::InputState(
+                        InputStateCommandEvent::UpdateMousePosition(pointer),
+                    ));
+                    out.push(AppEvent::InputState(
+                        InputStateCommandEvent::SetPaintButtonDown(false),
+                    ));
+                    out.push(AppEvent::InputState(
+                        InputStateCommandEvent::ResetPenPressure,
+                    ));
                     out.push(AppEvent::Tool(ToolCommandEvent::PointerUp(pointer)));
                 }
                 TouchPhase::Cancelled => {
-                    out.push(AppEvent::InputState(InputStateCommandEvent::UpdateMousePosition(
-                        pointer,
-                    )));
-                    out.push(AppEvent::InputState(InputStateCommandEvent::SetPaintButtonDown(
-                        false,
-                    )));
+                    out.push(AppEvent::InputState(
+                        InputStateCommandEvent::UpdateMousePosition(pointer),
+                    ));
+                    out.push(AppEvent::InputState(
+                        InputStateCommandEvent::SetPaintButtonDown(false),
+                    ));
                     out.push(AppEvent::Tool(ToolCommandEvent::PointerCancel(pointer)));
                 }
             }
@@ -322,20 +337,21 @@ pub fn normalize_window_event(
             if let PhysicalKey::Code(code) = event.physical_key {
                 let is_pressed = event.state == ElementState::Pressed;
 
-                out.push(AppEvent::InputState(InputStateCommandEvent::UpdateModifier {
-                    key: code,
-                    is_pressed,
-                }));
+                out.push(AppEvent::InputState(
+                    InputStateCommandEvent::UpdateModifier {
+                        key: code,
+                        is_pressed,
+                    },
+                ));
 
                 if binding_matches_key(input, &bindings.orbit_modifier, code) {
-                    out.push(AppEvent::InputState(InputStateCommandEvent::SetOrbitModifier(
-                        is_pressed,
-                    )));
-                } else if binding_matches_key(input, &bindings.pan_modifier, code)
-                {
-                    out.push(AppEvent::InputState(InputStateCommandEvent::SetAltModifier(
-                        is_pressed,
-                    )));
+                    out.push(AppEvent::InputState(
+                        InputStateCommandEvent::SetOrbitModifier(is_pressed),
+                    ));
+                } else if binding_matches_key(input, &bindings.pan_modifier, code) {
+                    out.push(AppEvent::InputState(
+                        InputStateCommandEvent::SetAltModifier(is_pressed),
+                    ));
                 }
 
                 if is_pressed {
@@ -343,20 +359,15 @@ pub fn normalize_window_event(
                         out.push(AppEvent::Ui(UiActionEvent::Undo));
                     } else if binding_matches_key(input, &bindings.redo, code) {
                         out.push(AppEvent::Ui(UiActionEvent::Redo));
-                    } else if binding_matches_key(input, &bindings.brush_size_down, code)
-                    {
+                    } else if binding_matches_key(input, &bindings.brush_size_down, code) {
                         out.push(AppEvent::Ui(UiActionEvent::AdjustBrushSize(-5.0)));
-                    } else if binding_matches_key(input, &bindings.brush_size_up, code)
-                    {
+                    } else if binding_matches_key(input, &bindings.brush_size_up, code) {
                         out.push(AppEvent::Ui(UiActionEvent::AdjustBrushSize(5.0)));
-                    } else if binding_matches_key(input, &bindings.clear_canvas, code)
-                    {
+                    } else if binding_matches_key(input, &bindings.clear_canvas, code) {
                         out.push(AppEvent::Ui(UiActionEvent::ClearCanvas));
-                    } else if binding_matches_key(input, &bindings.tool_brush, code)
-                    {
+                    } else if binding_matches_key(input, &bindings.tool_brush, code) {
                         out.push(AppEvent::Ui(UiActionEvent::SelectTool(ToolKind::Brush)));
-                    } else if binding_matches_key(input, &bindings.tool_eraser, code)
-                    {
+                    } else if binding_matches_key(input, &bindings.tool_eraser, code) {
                         out.push(AppEvent::Ui(UiActionEvent::SelectTool(ToolKind::Eraser)));
                     }
                 }
@@ -382,46 +393,46 @@ pub fn normalize_window_event(
 
             match button_state {
                 ElementState::Pressed => {
-                    out.push(AppEvent::InputState(InputStateCommandEvent::UpdateMousePosition(
-                        pointer,
-                    )));
+                    out.push(AppEvent::InputState(
+                        InputStateCommandEvent::UpdateMousePosition(pointer),
+                    ));
 
-                    if binding_matches_mouse(&bindings.paint_button, *button)
-                    {
-                        out.push(AppEvent::InputState(InputStateCommandEvent::SetPaintButtonDown(
-                            true,
-                        )));
+                    if binding_matches_mouse(&bindings.paint_button, *button) {
+                        out.push(AppEvent::InputState(
+                            InputStateCommandEvent::SetPaintButtonDown(true),
+                        ));
                         if !input.orbit_modifier && !input.alt {
                             out.push(AppEvent::Tool(ToolCommandEvent::PointerDown(pointer)));
                         }
-                    } else if binding_matches_mouse(&bindings.pan_button, *button)
-                    {
-                        out.push(AppEvent::InputState(InputStateCommandEvent::SetPanButtonDown(
-                            true,
-                        )));
+                    } else if binding_matches_mouse(&bindings.pan_button, *button) {
+                        out.push(AppEvent::InputState(
+                            InputStateCommandEvent::SetPanButtonDown(true),
+                        ));
                     }
                 }
                 ElementState::Released => {
-                    out.push(AppEvent::InputState(InputStateCommandEvent::UpdateMousePosition(
-                        pointer,
-                    )));
+                    out.push(AppEvent::InputState(
+                        InputStateCommandEvent::UpdateMousePosition(pointer),
+                    ));
 
-                    if binding_matches_mouse(&bindings.paint_button, *button)
-                    {
-                        out.push(AppEvent::InputState(InputStateCommandEvent::SetPaintButtonDown(
-                            false,
-                        )));
-                        out.push(AppEvent::InputState(InputStateCommandEvent::ResetPenPressure));
+                    if binding_matches_mouse(&bindings.paint_button, *button) {
+                        out.push(AppEvent::InputState(
+                            InputStateCommandEvent::SetPaintButtonDown(false),
+                        ));
+                        out.push(AppEvent::InputState(
+                            InputStateCommandEvent::ResetPenPressure,
+                        ));
                         out.push(AppEvent::Tool(ToolCommandEvent::PointerUp(pointer)));
-                    } else if binding_matches_mouse(&bindings.pan_button, *button)
-                    {
-                        out.push(AppEvent::InputState(InputStateCommandEvent::SetPanButtonDown(
-                            false,
-                        )));
+                    } else if binding_matches_mouse(&bindings.pan_button, *button) {
+                        out.push(AppEvent::InputState(
+                            InputStateCommandEvent::SetPanButtonDown(false),
+                        ));
                     }
 
                     if *button == MouseButton::Left {
-                        out.push(AppEvent::Document(DocumentCommandEvent::CommitCurrentStroke));
+                        out.push(AppEvent::Document(
+                            DocumentCommandEvent::CommitCurrentStroke,
+                        ));
                     }
                 }
             }
@@ -444,9 +455,9 @@ pub fn normalize_window_event(
                 },
             );
 
-            out.push(AppEvent::InputState(InputStateCommandEvent::UpdateMousePosition(
-                pointer,
-            )));
+            out.push(AppEvent::InputState(
+                InputStateCommandEvent::UpdateMousePosition(pointer),
+            ));
 
             if input.paint_button_down {
                 if input.orbit_modifier || input.alt {
@@ -473,9 +484,9 @@ pub fn normalize_window_event(
                 None,
                 HoverState::Hovering,
             );
-            out.push(AppEvent::InputState(InputStateCommandEvent::UpdateMousePosition(
-                pointer,
-            )));
+            out.push(AppEvent::InputState(
+                InputStateCommandEvent::UpdateMousePosition(pointer),
+            ));
         }
         WindowEvent::CursorLeft { .. } => {
             let pointer = pointer_from_position(
@@ -486,9 +497,9 @@ pub fn normalize_window_event(
                 None,
                 HoverState::Hovering,
             );
-            out.push(AppEvent::InputState(InputStateCommandEvent::UpdateMousePosition(
-                pointer,
-            )));
+            out.push(AppEvent::InputState(
+                InputStateCommandEvent::UpdateMousePosition(pointer),
+            ));
         }
         WindowEvent::MouseWheel { delta, .. } => {
             let scroll = match delta {

@@ -6,12 +6,12 @@
 
 use bevy_ecs::prelude::*;
 
-mod plugins;
 pub mod domain;
+mod plugins;
 
 /// Phase 3: System sets for deterministic frame flow.
 /// Each set represents a logical phase in the frame.
-/// 
+///
 /// Frame flow:
 /// 1. WinitEventIngest - Poll and ingest winit events
 /// 2. InputResolve - Normalize input state, update modifiers
@@ -44,9 +44,9 @@ pub enum FramePhase {
 /// ECS event types mirroring the message bus.
 /// These events are emitted by input systems and consumed by action systems.
 pub mod events {
-    use bevy_ecs::event::Event;
     use crate::app::input::{ModifiersSnapshot, PointerData};
     use crate::painter::BlendMode;
+    use bevy_ecs::event::Event;
 
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     pub enum ToolKind {
@@ -73,10 +73,18 @@ pub mod events {
         SetImportMargin(crate::mesh::MarginSize),
         SetImportOrientation(crate::mesh::IslandOrientation),
         RecomputeUvsAndReproject,
-        SetPressureCurve { min_start: f32, max_at: f32 },
+        SetPressureCurve {
+            min_start: f32,
+            max_at: f32,
+        },
         StartGltfLoad,
-        FinishGltfLoadSuccess { filename: String },
-        FinishGltfLoadError { path: std::path::PathBuf, message: String },
+        FinishGltfLoadSuccess {
+            filename: String,
+        },
+        FinishGltfLoadError {
+            path: std::path::PathBuf,
+            message: String,
+        },
         DismissLoadError,
         SelectLayer(usize),
         AddPaintLayer(String),
@@ -84,13 +92,38 @@ pub mod events {
         AddUvCheckerLayer,
         AddFillLayer,
         DeleteLayer(usize),
-        SetLayerVisible { idx: usize, visible: bool },
-        SetLayerBlendMode { idx: usize, mode: BlendMode },
-        SetLayerOpacity { idx: usize, opacity: f32, begin_undo: bool },
-        SetFillBaseColor { idx: usize, color: [u8; 4], begin_undo: bool },
-        SetFillNoiseColor { idx: usize, color: [u8; 4], begin_undo: bool },
-        SetFillNoiseScale { idx: usize, scale: f32, begin_undo: bool },
-        SetFillProjectionMode { idx: usize, mode: u32 },
+        SetLayerVisible {
+            idx: usize,
+            visible: bool,
+        },
+        SetLayerBlendMode {
+            idx: usize,
+            mode: BlendMode,
+        },
+        SetLayerOpacity {
+            idx: usize,
+            opacity: f32,
+            begin_undo: bool,
+        },
+        SetFillBaseColor {
+            idx: usize,
+            color: [u8; 4],
+            begin_undo: bool,
+        },
+        SetFillNoiseColor {
+            idx: usize,
+            color: [u8; 4],
+            begin_undo: bool,
+        },
+        SetFillNoiseScale {
+            idx: usize,
+            scale: f32,
+            begin_undo: bool,
+        },
+        SetFillProjectionMode {
+            idx: usize,
+            mode: u32,
+        },
         ClearCanvas,
         Undo,
         Redo,
@@ -119,7 +152,10 @@ pub mod events {
 
     #[derive(Clone, Copy, Debug, Event)]
     pub enum InputStateCommandEvent {
-        UpdateModifier { key: winit::keyboard::KeyCode, is_pressed: bool },
+        UpdateModifier {
+            key: winit::keyboard::KeyCode,
+            is_pressed: bool,
+        },
         UpdateModifiersSnapshot(ModifiersSnapshot),
         UpdateMousePosition(PointerData),
         SetPaintButtonDown(bool),
@@ -181,7 +217,7 @@ pub mod events {
 }
 
 /// Resource wrapper for the application domain state snapshot.
-/// 
+///
 /// Holds the read-only or shared portions of app state that need to be
 /// accessible from multiple systems without direct mutability contention.
 #[derive(Resource, Clone)]
@@ -201,7 +237,6 @@ pub struct InteractionStateResource {
 /// Resource wrapper for user preferences and settings.
 #[derive(Resource, Clone)]
 pub struct PreferencesResource(pub crate::app::user_preferences::UserPreferences);
-
 
 /// Resource wrapper for GPU context handles.
 ///
@@ -376,16 +411,14 @@ impl EcsRuntime {
     /// Create a new ECS runtime with an empty world and default schedule.
     pub fn new() -> Self {
         let mut world = World::new();
-        
+
         // Register event types so they can be sent/received in systems
         world.init_resource::<Events<events::AppEvent>>();
         world.init_resource::<Events<events::WindowSurfaceEvent>>();
         world.init_resource::<Events<events::RedrawEvent>>();
         world.init_resource::<Events<events::RenderRequestEvent>>();
         world.init_resource::<Events<events::RenderFailureEvent>>();
-        world.insert_resource(DomainStateResource(
-            crate::app::app_state::AppState::new(),
-        ));
+        world.insert_resource(DomainStateResource(crate::app::app_state::AppState::new()));
         world.init_resource::<SurfaceRegistryResource>();
         world.init_resource::<PendingSurfaceOpsResource>();
         world.init_resource::<PendingPrepareOpsResource>();
@@ -394,7 +427,7 @@ impl EcsRuntime {
         world.init_resource::<UiWindowRegistryResource>();
         world.init_resource::<PendingUiFrameOpsResource>();
         world.init_resource::<ToolRuntimeResource>();
-        
+
         // Phase 3: Initialize ordered schedules for deterministic frame flow.
         // The main schedule will execute each phase in order.
         let mut schedule = Schedule::default();
@@ -407,13 +440,13 @@ impl EcsRuntime {
         plugins::render::register(&mut schedule);
         plugins::ui::register(&mut schedule);
         plugins::asset_io::register(&mut schedule);
-        
+
         // Initialize extracted render data resources for Phase 3.2
         // These will be populated during ExtractRenderData phase
         world.init_resource::<ExtractedCameraData>();
         world.init_resource::<ExtractedLayerComposition>();
         world.init_resource::<ExtractedDocumentData>();
-        
+
         Self { world, schedule }
     }
 
@@ -430,7 +463,8 @@ impl EcsRuntime {
         if let Some(mut domain) = self.world.get_resource_mut::<DomainStateResource>() {
             domain.0 = app_state.clone();
         } else {
-            self.world.insert_resource(DomainStateResource(app_state.clone()));
+            self.world
+                .insert_resource(DomainStateResource(app_state.clone()));
         }
     }
 
@@ -471,7 +505,6 @@ impl EcsRuntime {
             has_renderer,
         });
     }
-
 
     /// Register GPU context into the world.
     pub fn register_gpu_context(
@@ -583,7 +616,10 @@ impl EcsRuntime {
     /// Take pending host-side domain operations emitted by ECS systems.
     pub fn take_pending_domain_host_ops(&mut self) -> PendingDomainHostOpsResource {
         let mut pending = PendingDomainHostOpsResource::default();
-        if let Some(mut ops) = self.world.get_resource_mut::<PendingDomainHostOpsResource>() {
+        if let Some(mut ops) = self
+            .world
+            .get_resource_mut::<PendingDomainHostOpsResource>()
+        {
             pending = std::mem::take(&mut *ops);
         }
         pending
@@ -664,19 +700,10 @@ impl Default for EcsRuntime {
 pub mod systems {
     use super::events::*;
     use super::{
-        DomainStateResource,
-        ExtractedCameraData,
-        ExtractedDocumentData,
-        ExtractedLayerComposition,
-        PendingPrepareOpsResource,
-        PendingDomainHostOpsResource,
-        PendingRenderOpsResource,
-        PendingSurfaceOpsResource,
-        PendingUiFrameOpsResource,
-        SurfaceRegistryResource,
-        UiWindowRegistryResource,
-        MainWindowUiResource,
-        UvWindowUiResource,
+        DomainStateResource, ExtractedCameraData, ExtractedDocumentData, ExtractedLayerComposition,
+        MainWindowUiResource, PendingDomainHostOpsResource, PendingPrepareOpsResource,
+        PendingRenderOpsResource, PendingSurfaceOpsResource, PendingUiFrameOpsResource,
+        SurfaceRegistryResource, UiWindowRegistryResource, UvWindowUiResource,
     };
     use bevy_ecs::system::{Res, ResMut};
 
@@ -917,7 +944,10 @@ pub mod systems {
     ) {
         for event in events.read() {
             if let AppEvent::InputState(command) = event {
-                crate::app::ecs::domain::apply_input_state_event_to_app_state(&mut domain.0, command);
+                crate::app::ecs::domain::apply_input_state_event_to_app_state(
+                    &mut domain.0,
+                    command,
+                );
                 pending_host_ops.input_state_commands.push(*command);
             }
         }
@@ -975,7 +1005,7 @@ pub mod systems {
     ) {
         let app_state = &domain.0;
         let layer_count = app_state.document().layer_count;
-        
+
         extracted_layers.layer_count = layer_count;
         extracted_layers.active_layer_idx = app_state.document().active_layer_idx;
         extracted_layers.layer_visibility = app_state.layer_composition().visibilities.clone();
@@ -1047,7 +1077,10 @@ mod tests {
     #[test]
     fn test_tool_runtime_resource_initialized() {
         let runtime = EcsRuntime::new();
-        assert!(runtime.world.get_resource::<ToolRuntimeResource>().is_some());
+        assert!(runtime
+            .world
+            .get_resource::<ToolRuntimeResource>()
+            .is_some());
     }
 
     #[test]
@@ -1141,9 +1174,18 @@ mod tests {
     fn test_extracted_render_data_initialized() {
         let runtime = EcsRuntime::new();
         // Verify extracted resources are initialized
-        assert!(runtime.world.get_resource::<ExtractedCameraData>().is_some());
-        assert!(runtime.world.get_resource::<ExtractedLayerComposition>().is_some());
-        assert!(runtime.world.get_resource::<ExtractedDocumentData>().is_some());
+        assert!(runtime
+            .world
+            .get_resource::<ExtractedCameraData>()
+            .is_some());
+        assert!(runtime
+            .world
+            .get_resource::<ExtractedLayerComposition>()
+            .is_some());
+        assert!(runtime
+            .world
+            .get_resource::<ExtractedDocumentData>()
+            .is_some());
     }
 
     #[test]
@@ -1171,7 +1213,9 @@ mod tests {
     #[test]
     fn test_ui_system_mutates_domain_state_resource() {
         let mut runtime = EcsRuntime::new();
-        runtime.send_event(events::AppEvent::Ui(events::UiActionEvent::SetBrushSize(123.0)));
+        runtime.send_event(events::AppEvent::Ui(events::UiActionEvent::SetBrushSize(
+            123.0,
+        )));
 
         runtime.tick();
 
@@ -1204,9 +1248,9 @@ mod tests {
     #[test]
     fn test_ui_system_emits_pending_host_ui_ops() {
         let mut runtime = EcsRuntime::new();
-        runtime.send_event(events::AppEvent::Ui(events::UiActionEvent::SetBrushOpacity(
-            0.25,
-        )));
+        runtime.send_event(events::AppEvent::Ui(
+            events::UiActionEvent::SetBrushOpacity(0.25),
+        ));
 
         runtime.tick();
 

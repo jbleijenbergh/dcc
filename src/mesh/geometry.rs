@@ -1,5 +1,5 @@
-use super::uv_projector::{ImportSettings, BoxProjector, SeamsOption};
 use super::gltf_loader::MaterialInfo;
+use super::uv_projector::{BoxProjector, ImportSettings, SeamsOption};
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -55,7 +55,12 @@ pub struct Primitive {
 }
 
 impl Primitive {
-    pub fn new(device: &wgpu::Device, vertices: Vec<Vertex>, indices: Vec<u32>, label: &str) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        vertices: Vec<Vertex>,
+        indices: Vec<u32>,
+        label: &str,
+    ) -> Self {
         use wgpu::util::DeviceExt;
         let num_indices = indices.len() as u32;
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -89,7 +94,12 @@ impl Primitive {
         }
     }
 
-    pub fn update_buffers(&mut self, device: &wgpu::Device, vertices: Vec<Vertex>, indices: Vec<u32>) {
+    pub fn update_buffers(
+        &mut self,
+        device: &wgpu::Device,
+        vertices: Vec<Vertex>,
+        indices: Vec<u32>,
+    ) {
         use wgpu::util::DeviceExt;
         self.vertices = vertices;
         self.indices = indices;
@@ -196,12 +206,9 @@ impl Document {
                             continue;
                         }
                     }
-                    
-                    let (new_vertices, new_indices) = BoxProjector::project(
-                        &primitive.vertices,
-                        &primitive.indices,
-                        settings,
-                    );
+
+                    let (new_vertices, new_indices) =
+                        BoxProjector::project(&primitive.vertices, &primitive.indices, settings);
                     primitive.update_buffers(device, new_vertices, new_indices);
                 }
             }
@@ -276,7 +283,12 @@ impl Document {
         list
     }
 
-    fn collect_nodes_recursive<'a>(&'a self, node_idx: usize, parent_world: glam::Mat4, list: &mut Vec<(&'a Node, glam::Mat4)>) {
+    fn collect_nodes_recursive<'a>(
+        &'a self,
+        node_idx: usize,
+        parent_world: glam::Mat4,
+        list: &mut Vec<(&'a Node, glam::Mat4)>,
+    ) {
         if node_idx >= self.nodes.len() {
             return;
         }
@@ -375,12 +387,30 @@ pub fn create_cube(size: f32) -> (Vec<Vertex>, Vec<u32>) {
     let half = size / 2.0;
 
     let positions = [
-        [-half, -half,  half], [ half, -half,  half], [ half,  half,  half], [-half,  half,  half],
-        [-half, -half, -half], [-half,  half, -half], [ half,  half, -half], [ half, -half, -half],
-        [-half,  half, -half], [-half,  half,  half], [ half,  half,  half], [ half,  half, -half],
-        [-half, -half, -half], [ half, -half, -half], [ half, -half,  half], [-half, -half,  half],
-        [ half, -half, -half], [ half,  half, -half], [ half,  half,  half], [ half, -half,  half],
-        [-half, -half, -half], [-half, -half,  half], [-half,  half,  half], [-half,  half, -half],
+        [-half, -half, half],
+        [half, -half, half],
+        [half, half, half],
+        [-half, half, half],
+        [-half, -half, -half],
+        [-half, half, -half],
+        [half, half, -half],
+        [half, -half, -half],
+        [-half, half, -half],
+        [-half, half, half],
+        [half, half, half],
+        [half, half, -half],
+        [-half, -half, -half],
+        [half, -half, -half],
+        [half, -half, half],
+        [-half, -half, half],
+        [half, -half, -half],
+        [half, half, -half],
+        [half, half, half],
+        [half, -half, half],
+        [-half, -half, -half],
+        [-half, -half, half],
+        [-half, half, half],
+        [-half, half, -half],
     ];
 
     let normals = [
@@ -408,7 +438,7 @@ pub fn create_cube(size: f32) -> (Vec<Vertex>, Vec<u32>) {
         let (u_min, u_max, v_min, v_max) = match face {
             0 => (0.25, 0.50, 1.0 / 3.0, 2.0 / 3.0),
             1 => (0.75, 1.00, 1.0 / 3.0, 2.0 / 3.0),
-            2 => (0.25, 0.50, 0.0,       1.0 / 3.0),
+            2 => (0.25, 0.50, 0.0, 1.0 / 3.0),
             3 => (0.25, 0.50, 2.0 / 3.0, 1.0),
             4 => (0.50, 0.75, 1.0 / 3.0, 2.0 / 3.0),
             5 => (0.00, 0.25, 1.0 / 3.0, 2.0 / 3.0),
@@ -463,7 +493,6 @@ pub fn create_plane(size: f32) -> (Vec<Vertex>, Vec<u32>) {
             normal: [0.0, 0.0, 1.0],
             tex_coords: [0.0, 0.0],
         },
-
         Vertex {
             position: [half, -half, 0.0],
             normal: [0.0, 0.0, -1.0],
@@ -486,13 +515,7 @@ pub fn create_plane(size: f32) -> (Vec<Vertex>, Vec<u32>) {
         },
     ];
 
-    let indices = vec![
-        0, 1, 2,
-        0, 2, 3,
-
-        4, 5, 6,
-        4, 6, 7,
-    ];
+    let indices = vec![0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7];
 
     (vertices, indices)
 }
@@ -546,7 +569,12 @@ mod tests {
             let (vertices, _indices) = create_sphere(radius, 10, 10);
             for v in vertices {
                 let len = glam::Vec3::from(v.position).length();
-                assert!((len - radius).abs() < 1e-4, "Vertex position length {} should be close to radius {}", len, radius);
+                assert!(
+                    (len - radius).abs() < 1e-4,
+                    "Vertex position length {} should be close to radius {}",
+                    len,
+                    radius
+                );
             }
         }
 
@@ -560,16 +588,38 @@ mod tests {
                 let idx_end = (r * sectors + sectors - 1) as usize;
                 let v_start = &vertices[idx_start];
                 let v_end = &vertices[idx_end];
-                
+
                 // Compare positions
                 let p_start = glam::Vec3::from(v_start.position);
                 let p_end = glam::Vec3::from(v_end.position);
-                assert!((p_start - p_end).length() < 1e-5, "Ring {}: position mismatch {:?} vs {:?}", r, p_start, p_end);
-                
+                assert!(
+                    (p_start - p_end).length() < 1e-5,
+                    "Ring {}: position mismatch {:?} vs {:?}",
+                    r,
+                    p_start,
+                    p_end
+                );
+
                 // Compare texture coordinates
-                assert!((v_start.tex_coords[0] - 0.0).abs() < 1e-5, "Ring {}: U start should be 0.0, got {}", r, v_start.tex_coords[0]);
-                assert!((v_end.tex_coords[0] - 1.0).abs() < 1e-5, "Ring {}: U end should be 1.0, got {}", r, v_end.tex_coords[0]);
-                assert!((v_start.tex_coords[1] - v_end.tex_coords[1]).abs() < 1e-5, "Ring {}: V mismatch {} vs {}", r, v_start.tex_coords[1], v_end.tex_coords[1]);
+                assert!(
+                    (v_start.tex_coords[0] - 0.0).abs() < 1e-5,
+                    "Ring {}: U start should be 0.0, got {}",
+                    r,
+                    v_start.tex_coords[0]
+                );
+                assert!(
+                    (v_end.tex_coords[0] - 1.0).abs() < 1e-5,
+                    "Ring {}: U end should be 1.0, got {}",
+                    r,
+                    v_end.tex_coords[0]
+                );
+                assert!(
+                    (v_start.tex_coords[1] - v_end.tex_coords[1]).abs() < 1e-5,
+                    "Ring {}: V mismatch {} vs {}",
+                    r,
+                    v_start.tex_coords[1],
+                    v_end.tex_coords[1]
+                );
             }
         }
     }

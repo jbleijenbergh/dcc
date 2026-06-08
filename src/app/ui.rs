@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use super::LoadError;
-use crate::mesh::{MaterialInfo, Node, Mesh};
+use crate::mesh::{MaterialInfo, Mesh, Node};
 
 #[derive(Debug, Default, Clone)]
 pub(super) struct TransientUiState {
@@ -10,17 +10,25 @@ pub(super) struct TransientUiState {
     pub settings_feedback: Option<String>,
 }
 
-pub(super) fn draw_node_tree(ui: &mut egui::Ui, nodes: &[Node], node_idx: usize, materials: &[MaterialInfo]) {
+pub(super) fn draw_node_tree(
+    ui: &mut egui::Ui,
+    nodes: &[Node],
+    node_idx: usize,
+    materials: &[MaterialInfo],
+) {
     if node_idx >= nodes.len() {
         return;
     }
     ui.push_id(node_idx, |ui| {
         let node = &nodes[node_idx];
-        let label = node.name.clone().unwrap_or_else(|| format!("Node {}", node_idx));
-        
+        let label = node
+            .name
+            .clone()
+            .unwrap_or_else(|| format!("Node {}", node_idx));
+
         let has_children = !node.children.is_empty();
         let has_mesh = node.mesh.is_some();
-        
+
         if !has_children && !has_mesh {
             ui.horizontal(|ui| {
                 ui.label(format!("📄 {}", label));
@@ -62,17 +70,26 @@ pub(super) fn draw_mesh_info(ui: &mut egui::Ui, mesh: &Mesh, materials: &[Materi
                             });
 
                             ui.add_space(2.0);
-                            if let Some(mat) = prim.material_index.and_then(|idx| materials.get(idx)) {
+                            if let Some(mat) =
+                                prim.material_index.and_then(|idx| materials.get(idx))
+                            {
                                 ui.horizontal(|ui| {
                                     ui.label(egui::RichText::new("🎨 Material:").size(11.0));
                                     ui.label(
-                                        egui::RichText::new(mat.name.as_deref().unwrap_or("Material"))
-                                            .strong()
-                                            .size(11.0),
+                                        egui::RichText::new(
+                                            mat.name.as_deref().unwrap_or("Material"),
+                                        )
+                                        .strong()
+                                        .size(11.0),
                                     );
                                 });
                             } else {
-                                ui.label(egui::RichText::new("No material").size(10.0).weak().italics());
+                                ui.label(
+                                    egui::RichText::new("No material")
+                                        .size(10.0)
+                                        .weak()
+                                        .italics(),
+                                );
                             }
                         });
                 });
@@ -83,11 +100,8 @@ pub(super) fn draw_mesh_info(ui: &mut egui::Ui, mesh: &Mesh, materials: &[Materi
 pub(super) fn draw_material_details(ui: &mut egui::Ui, idx: usize, mat: &MaterialInfo) {
     ui.push_id(idx, |ui| {
         egui::CollapsingHeader::new(
-            egui::RichText::new(format!(
-                "🎨  {}",
-                mat.name.as_deref().unwrap_or("Material")
-            ))
-            .strong(),
+            egui::RichText::new(format!("🎨  {}", mat.name.as_deref().unwrap_or("Material")))
+                .strong(),
         )
         .default_open(false)
         .show(ui, |ui| {
@@ -105,7 +119,11 @@ pub(super) fn draw_material_details(ui: &mut egui::Ui, idx: usize, mat: &Materia
                             (bc[2] * 255.0) as u8,
                             (bc[3] * 255.0) as u8,
                         );
-                        egui::color_picker::show_color(ui, swatch_color, egui::Vec2::new(18.0, 14.0));
+                        egui::color_picker::show_color(
+                            ui,
+                            swatch_color,
+                            egui::Vec2::new(18.0, 14.0),
+                        );
                         ui.label(
                             egui::RichText::new(format!(
                                 "({:.2}, {:.2}, {:.2}, {:.2})",
@@ -118,26 +136,38 @@ pub(super) fn draw_material_details(ui: &mut egui::Ui, idx: usize, mat: &Materia
                     ui.end_row();
 
                     ui.label(egui::RichText::new("Metallic").size(11.0));
-                    ui.add(egui::ProgressBar::new(mat.metallic_factor)
-                        .desired_width(80.0)
-                        .text(format!("{:.2}", mat.metallic_factor)));
+                    ui.add(
+                        egui::ProgressBar::new(mat.metallic_factor)
+                            .desired_width(80.0)
+                            .text(format!("{:.2}", mat.metallic_factor)),
+                    );
                     ui.end_row();
 
                     ui.label(egui::RichText::new("Roughness").size(11.0));
-                    ui.add(egui::ProgressBar::new(mat.roughness_factor)
-                        .desired_width(80.0)
-                        .text(format!("{:.2}", mat.roughness_factor)));
+                    ui.add(
+                        egui::ProgressBar::new(mat.roughness_factor)
+                            .desired_width(80.0)
+                            .text(format!("{:.2}", mat.roughness_factor)),
+                    );
                     ui.end_row();
 
                     if mat.normal_scale != 1.0 {
                         ui.label(egui::RichText::new("Normal Scale").size(11.0));
-                        ui.label(egui::RichText::new(format!("{:.2}", mat.normal_scale)).size(10.0).weak());
+                        ui.label(
+                            egui::RichText::new(format!("{:.2}", mat.normal_scale))
+                                .size(10.0)
+                                .weak(),
+                        );
                         ui.end_row();
                     }
 
                     if mat.has_occlusion_texture {
                         ui.label(egui::RichText::new("Occlusion Strength").size(11.0));
-                        ui.label(egui::RichText::new(format!("{:.2}", mat.occlusion_strength)).size(10.0).weak());
+                        ui.label(
+                            egui::RichText::new(format!("{:.2}", mat.occlusion_strength))
+                                .size(10.0)
+                                .weak(),
+                        );
                         ui.end_row();
                     }
 
@@ -151,7 +181,11 @@ pub(super) fn draw_material_details(ui: &mut egui::Ui, idx: usize, mat: &Materia
                                 (em[1].min(1.0) * 255.0) as u8,
                                 (em[2].min(1.0) * 255.0) as u8,
                             );
-                            egui::color_picker::show_color(ui, em_color, egui::Vec2::new(18.0, 14.0));
+                            egui::color_picker::show_color(
+                                ui,
+                                em_color,
+                                egui::Vec2::new(18.0, 14.0),
+                            );
                             ui.label(
                                 egui::RichText::new(format!(
                                     "({:.2}, {:.2}, {:.2})",
@@ -166,38 +200,60 @@ pub(super) fn draw_material_details(ui: &mut egui::Ui, idx: usize, mat: &Materia
 
                     if mat.emissive_strength != 1.0 {
                         ui.label(egui::RichText::new("Emissive Strength").size(11.0));
-                        ui.label(egui::RichText::new(format!("{:.2}x", mat.emissive_strength)).size(10.0).weak());
+                        ui.label(
+                            egui::RichText::new(format!("{:.2}x", mat.emissive_strength))
+                                .size(10.0)
+                                .weak(),
+                        );
                         ui.end_row();
                     }
 
                     if mat.unlit {
                         ui.label(egui::RichText::new("Unlit").size(11.0));
-                        ui.label(egui::RichText::new("Yes").size(10.0).color(egui::Color32::from_rgb(255, 215, 0)));
+                        ui.label(
+                            egui::RichText::new("Yes")
+                                .size(10.0)
+                                .color(egui::Color32::from_rgb(255, 215, 0)),
+                        );
                         ui.end_row();
                     }
 
                     if (mat.ior - 1.5).abs() > 0.001 {
                         ui.label(egui::RichText::new("Index of Refraction").size(11.0));
-                        ui.label(egui::RichText::new(format!("{:.3}", mat.ior)).size(10.0).weak());
+                        ui.label(
+                            egui::RichText::new(format!("{:.3}", mat.ior))
+                                .size(10.0)
+                                .weak(),
+                        );
                         ui.end_row();
                     }
 
                     if mat.transmission_factor > 0.001 {
                         ui.label(egui::RichText::new("Transmission").size(11.0));
-                        ui.add(egui::ProgressBar::new(mat.transmission_factor)
-                            .desired_width(80.0)
-                            .text(format!("{:.2}", mat.transmission_factor)));
+                        ui.add(
+                            egui::ProgressBar::new(mat.transmission_factor)
+                                .desired_width(80.0)
+                                .text(format!("{:.2}", mat.transmission_factor)),
+                        );
                         ui.end_row();
                     }
 
                     if mat.thickness_factor > 0.001 {
                         ui.label(egui::RichText::new("Volume Thickness").size(11.0));
-                        ui.label(egui::RichText::new(format!("{:.2}", mat.thickness_factor)).size(10.0).weak());
+                        ui.label(
+                            egui::RichText::new(format!("{:.2}", mat.thickness_factor))
+                                .size(10.0)
+                                .weak(),
+                        );
                         ui.end_row();
 
                         if mat.attenuation_distance.is_finite() {
                             ui.label(egui::RichText::new("Attenuation Dist").size(11.0));
-                            ui.label(egui::RichText::new(format!("{:.2}", mat.attenuation_distance)).size(10.0).weak());
+                            ui.label(
+                                egui::RichText::new(format!("{:.2}", mat.attenuation_distance))
+                                    .size(10.0)
+                                    .weak(),
+                            );
                             ui.end_row();
                         }
 
@@ -209,14 +265,24 @@ pub(super) fn draw_material_details(ui: &mut egui::Ui, idx: usize, mat: &Materia
                                 (ac[1] * 255.0) as u8,
                                 (ac[2] * 255.0) as u8,
                             );
-                            egui::color_picker::show_color(ui, ac_color, egui::Vec2::new(18.0, 14.0));
+                            egui::color_picker::show_color(
+                                ui,
+                                ac_color,
+                                egui::Vec2::new(18.0, 14.0),
+                            );
                         });
                         ui.end_row();
                     }
 
-                    if (mat.specular_factor - 1.0).abs() > 0.001 || mat.specular_color_factor != [1.0, 1.0, 1.0] {
+                    if (mat.specular_factor - 1.0).abs() > 0.001
+                        || mat.specular_color_factor != [1.0, 1.0, 1.0]
+                    {
                         ui.label(egui::RichText::new("Specular Factor").size(11.0));
-                        ui.label(egui::RichText::new(format!("{:.2}", mat.specular_factor)).size(10.0).weak());
+                        ui.label(
+                            egui::RichText::new(format!("{:.2}", mat.specular_factor))
+                                .size(10.0)
+                                .weak(),
+                        );
                         ui.end_row();
 
                         ui.label(egui::RichText::new("Specular Color").size(11.0));
@@ -227,22 +293,30 @@ pub(super) fn draw_material_details(ui: &mut egui::Ui, idx: usize, mat: &Materia
                                 (sc[1] * 255.0) as u8,
                                 (sc[2] * 255.0) as u8,
                             );
-                            egui::color_picker::show_color(ui, sc_color, egui::Vec2::new(18.0, 14.0));
+                            egui::color_picker::show_color(
+                                ui,
+                                sc_color,
+                                egui::Vec2::new(18.0, 14.0),
+                            );
                         });
                         ui.end_row();
                     }
 
                     if mat.clearcoat_factor > 0.001 {
                         ui.label(egui::RichText::new("Clearcoat Factor").size(11.0));
-                        ui.add(egui::ProgressBar::new(mat.clearcoat_factor)
-                            .desired_width(80.0)
-                            .text(format!("{:.2}", mat.clearcoat_factor)));
+                        ui.add(
+                            egui::ProgressBar::new(mat.clearcoat_factor)
+                                .desired_width(80.0)
+                                .text(format!("{:.2}", mat.clearcoat_factor)),
+                        );
                         ui.end_row();
 
                         ui.label(egui::RichText::new("Clearcoat Rough").size(11.0));
-                        ui.add(egui::ProgressBar::new(mat.clearcoat_roughness_factor)
-                            .desired_width(80.0)
-                            .text(format!("{:.2}", mat.clearcoat_roughness_factor)));
+                        ui.add(
+                            egui::ProgressBar::new(mat.clearcoat_roughness_factor)
+                                .desired_width(80.0)
+                                .text(format!("{:.2}", mat.clearcoat_roughness_factor)),
+                        );
                         ui.end_row();
                     }
 
@@ -255,55 +329,93 @@ pub(super) fn draw_material_details(ui: &mut egui::Ui, idx: usize, mat: &Materia
                                 (shc[1] * 255.0) as u8,
                                 (shc[2] * 255.0) as u8,
                             );
-                            egui::color_picker::show_color(ui, shc_color, egui::Vec2::new(18.0, 14.0));
+                            egui::color_picker::show_color(
+                                ui,
+                                shc_color,
+                                egui::Vec2::new(18.0, 14.0),
+                            );
                         });
                         ui.end_row();
 
                         ui.label(egui::RichText::new("Sheen Roughness").size(11.0));
-                        ui.add(egui::ProgressBar::new(mat.sheen_roughness_factor)
-                            .desired_width(80.0)
-                            .text(format!("{:.2}", mat.sheen_roughness_factor)));
+                        ui.add(
+                            egui::ProgressBar::new(mat.sheen_roughness_factor)
+                                .desired_width(80.0)
+                                .text(format!("{:.2}", mat.sheen_roughness_factor)),
+                        );
                         ui.end_row();
                     }
 
                     if mat.anisotropy_strength.abs() > 0.001 {
                         ui.label(egui::RichText::new("Anisotropy Strength").size(11.0));
-                        ui.label(egui::RichText::new(format!("{:.2}", mat.anisotropy_strength)).size(10.0).weak());
+                        ui.label(
+                            egui::RichText::new(format!("{:.2}", mat.anisotropy_strength))
+                                .size(10.0)
+                                .weak(),
+                        );
                         ui.end_row();
 
                         ui.label(egui::RichText::new("Anisotropy Rotation").size(11.0));
-                        ui.label(egui::RichText::new(format!("{:.1}°", mat.anisotropy_rotation.to_degrees())).size(10.0).weak());
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{:.1}°",
+                                mat.anisotropy_rotation.to_degrees()
+                            ))
+                            .size(10.0)
+                            .weak(),
+                        );
                         ui.end_row();
                     }
 
                     if mat.iridescence_factor > 0.001 {
                         ui.label(egui::RichText::new("Iridescence Factor").size(11.0));
-                        ui.add(egui::ProgressBar::new(mat.iridescence_factor)
-                            .desired_width(80.0)
-                            .text(format!("{:.2}", mat.iridescence_factor)));
+                        ui.add(
+                            egui::ProgressBar::new(mat.iridescence_factor)
+                                .desired_width(80.0)
+                                .text(format!("{:.2}", mat.iridescence_factor)),
+                        );
                         ui.end_row();
 
                         ui.label(egui::RichText::new("Iridescence IOR").size(11.0));
-                        ui.label(egui::RichText::new(format!("{:.2}", mat.iridescence_ior)).size(10.0).weak());
+                        ui.label(
+                            egui::RichText::new(format!("{:.2}", mat.iridescence_ior))
+                                .size(10.0)
+                                .weak(),
+                        );
                         ui.end_row();
 
                         ui.label(egui::RichText::new("Iridescence Thick").size(11.0));
-                        ui.label(egui::RichText::new(format!("{:.0}-{:.0} nm", mat.iridescence_thickness_min, mat.iridescence_thickness_max)).size(10.0).weak());
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{:.0}-{:.0} nm",
+                                mat.iridescence_thickness_min, mat.iridescence_thickness_max
+                            ))
+                            .size(10.0)
+                            .weak(),
+                        );
                         ui.end_row();
                     }
 
                     ui.label(egui::RichText::new("Alpha Mode").size(11.0));
                     let alpha_color = match mat.alpha_mode.as_str() {
                         "Blend" => egui::Color32::from_rgb(100, 160, 255),
-                        "Mask"  => egui::Color32::from_rgb(255, 190, 80),
-                        _       => egui::Color32::from_rgb(120, 200, 120),
+                        "Mask" => egui::Color32::from_rgb(255, 190, 80),
+                        _ => egui::Color32::from_rgb(120, 200, 120),
                     };
-                    ui.label(egui::RichText::new(&mat.alpha_mode).size(10.0).color(alpha_color));
+                    ui.label(
+                        egui::RichText::new(&mat.alpha_mode)
+                            .size(10.0)
+                            .color(alpha_color),
+                    );
                     ui.end_row();
 
                     if mat.alpha_mode == "Mask" {
                         ui.label(egui::RichText::new("Alpha Cutoff").size(11.0));
-                        ui.label(egui::RichText::new(format!("{:.2}", mat.alpha_cutoff)).size(10.0).weak());
+                        ui.label(
+                            egui::RichText::new(format!("{:.2}", mat.alpha_cutoff))
+                                .size(10.0)
+                                .weak(),
+                        );
                         ui.end_row();
                     }
 
@@ -340,7 +452,11 @@ pub(super) fn draw_material_details(ui: &mut egui::Ui, idx: usize, mat: &Materia
 
             if !active_slots.is_empty() {
                 ui.add_space(5.0);
-                ui.label(egui::RichText::new("Active Texture Slots").size(10.0).weak());
+                ui.label(
+                    egui::RichText::new("Active Texture Slots")
+                        .size(10.0)
+                        .weak(),
+                );
                 ui.horizontal_wrapped(|ui| {
                     let present_color = egui::Color32::from_rgb(80, 190, 110);
                     for (label, _) in active_slots {

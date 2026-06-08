@@ -17,18 +17,27 @@ fn test_load_and_reproject_gltf() {
     }
 
     // 2. Load the glTF document
-    let mut doc = dcc_painter::mesh::load_gltf(&device, &layout, path)
-        .expect("Failed to load glTF document");
+    let mut doc =
+        dcc_painter::mesh::load_gltf(&device, &layout, path).expect("Failed to load glTF document");
 
     // 3. Perform basic sanity checks
-    assert!(!doc.scenes.is_empty(), "Document should contain at least one scene");
-    assert!(!doc.nodes.is_empty(), "Document should contain at least one node");
+    assert!(
+        !doc.scenes.is_empty(),
+        "Document should contain at least one scene"
+    );
+    assert!(
+        !doc.nodes.is_empty(),
+        "Document should contain at least one node"
+    );
 
     // Check bounds calculations
     let bounds = doc.compute_bounds();
     assert!(bounds.is_some(), "Document should have non-empty bounds");
     let (min, max) = bounds.unwrap();
-    assert!(min.x <= max.x && min.y <= max.y && min.z <= max.z, "Invalid bounding box dimensions");
+    assert!(
+        min.x <= max.x && min.y <= max.y && min.z <= max.z,
+        "Invalid bounding box dimensions"
+    );
 
     // 4. Test reprojecting UV layouts
     let settings = dcc_painter::mesh::ImportSettings {
@@ -41,6 +50,12 @@ fn test_load_and_reproject_gltf() {
 
     // Verify bounds remain intact after reprojection
     let bounds_after = doc.compute_bounds().unwrap();
-    assert!((bounds_after.0 - min).length() < 1e-3, "Bounds min shifted during UV reprojection");
-    assert!((bounds_after.1 - max).length() < 1e-3, "Bounds max shifted during UV reprojection");
+    assert!(
+        (bounds_after.0 - min).length() < 1e-3,
+        "Bounds min shifted during UV reprojection"
+    );
+    assert!(
+        (bounds_after.1 - max).length() < 1e-3,
+        "Bounds max shifted during UV reprojection"
+    );
 }

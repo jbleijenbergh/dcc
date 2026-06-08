@@ -8,7 +8,10 @@ impl State {
 
         let start_time = std::time::Instant::now();
 
-        let mouse_pos = glam::Vec2::new(self.app_state.input().last_mouse_pos.x as f32, self.app_state.input().last_mouse_pos.y as f32);
+        let mouse_pos = glam::Vec2::new(
+            self.app_state.input().last_mouse_pos.x as f32,
+            self.app_state.input().last_mouse_pos.y as f32,
+        );
         let screen_size = glam::Vec2::new(self.size.width as f32, self.size.height as f32);
 
         let eye = self.viewport.camera.get_eye();
@@ -23,20 +26,21 @@ impl State {
         let ray = crate::raycast::Ray::from_screen(mouse_pos, screen_size, view, proj);
 
         let is_eraser = self.app_state.tool().active_tool == Tool::Eraser;
-        
+
         // Apply tablet pressure to brush parameters
-        let pressure = if self.app_state.input().has_tablet_input { self.calibrated_pressure() } else { 1.0 };
+        let pressure = if self.app_state.input().has_tablet_input {
+            self.calibrated_pressure()
+        } else {
+            1.0
+        };
         let effective_size = self.app_state.canvas().brush_size * (0.2 + 0.8 * pressure); // Min 20% size at zero pressure
         let effective_opacity = self.app_state.canvas().brush_opacity * pressure;
-        
+
         let mut brush_rgba = self.app_state.canvas().brush_color;
         brush_rgba[3] = (effective_opacity * 255.0) as u8;
 
         let raycast_start = std::time::Instant::now();
-        let hit_opt = crate::raycast::intersect_document(
-            &ray,
-            &self.viewport.document,
-        );
+        let hit_opt = crate::raycast::intersect_document(&ray, &self.viewport.document);
         let raycast_duration = raycast_start.elapsed();
 
         if let Some(hit) = hit_opt {
@@ -119,14 +123,29 @@ impl State {
 
     pub fn toggle_mesh(&mut self, mode: &str) {
         let doc = match mode {
-            "Cube" => crate::mesh::create_cube_document(&self.device, &self.viewport.node_bind_group_layout, 2.0),
-            "Plane" => crate::mesh::create_plane_document(&self.device, &self.viewport.node_bind_group_layout, 2.5),
-            _ => crate::mesh::create_sphere_document(&self.device, &self.viewport.node_bind_group_layout, 1.5, 32, 32),
+            "Cube" => crate::mesh::create_cube_document(
+                &self.device,
+                &self.viewport.node_bind_group_layout,
+                2.0,
+            ),
+            "Plane" => crate::mesh::create_plane_document(
+                &self.device,
+                &self.viewport.node_bind_group_layout,
+                2.5,
+            ),
+            _ => crate::mesh::create_sphere_document(
+                &self.device,
+                &self.viewport.node_bind_group_layout,
+                1.5,
+                32,
+                32,
+            ),
         };
         self.viewport.set_document(doc);
         self.viewport.update_node_transforms(&self.queue);
         self.painter.reproject_strokes(&self.viewport.document);
-        self.painter.redraw_all_layers(&self.device, &self.queue, &self.viewport.document);
+        self.painter
+            .redraw_all_layers(&self.device, &self.queue, &self.viewport.document);
         log::info!("Switched geometry to {}", mode);
     }
 
@@ -164,15 +183,22 @@ impl State {
             if let Ok(mut lock) = status.lock() {
                 *lock = "Loading meshes and textures...".to_string();
             }
-            let res = crate::mesh::load_gltf(&device, &layout, &path)
-                .map(|doc| {
-                    let filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
-                    let mut reprojected_strokes = strokes_to_reproject;
-                    
-                    crate::painter::Painter::reproject_strokes_in_background(&mut reprojected_strokes, &doc, &status);
-                    
-                    (doc, filename, reprojected_strokes)
-                });
+            let res = crate::mesh::load_gltf(&device, &layout, &path).map(|doc| {
+                let filename = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                let mut reprojected_strokes = strokes_to_reproject;
+
+                crate::painter::Painter::reproject_strokes_in_background(
+                    &mut reprojected_strokes,
+                    &doc,
+                    &status,
+                );
+
+                (doc, filename, reprojected_strokes)
+            });
             let _ = tx.send(res);
             window.request_redraw();
         });
@@ -183,19 +209,26 @@ impl State {
             let center = (min + max) * 0.5;
             let size = max - min;
             let max_dim = size.x.max(size.y).max(size.z);
-            
+
             self.viewport.camera.target = center;
             self.viewport.camera.distance = (max_dim * 1.5).max(1.0);
-            log::info!("Focused camera at center: {:?}, distance: {}", center, self.viewport.camera.distance);
+            log::info!(
+                "Focused camera at center: {:?}, distance: {}",
+                center,
+                self.viewport.camera.distance
+            );
         }
     }
 
     pub fn recompute_and_reproject(&mut self) {
         log::info!("Recomputing UV layout and reprojecting strokes...");
-        self.viewport.document.recompute_uvs(&self.import_settings, &self.device);
+        self.viewport
+            .document
+            .recompute_uvs(&self.import_settings, &self.device);
         self.viewport.update_node_transforms(&self.queue);
         self.painter.reproject_strokes(&self.viewport.document);
-        self.painter.redraw_all_layers(&self.device, &self.queue, &self.viewport.document);
+        self.painter
+            .redraw_all_layers(&self.device, &self.queue, &self.viewport.document);
         log::info!("UV layout recomputation and stroke reprojection complete!");
     }
 }

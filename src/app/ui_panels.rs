@@ -1,117 +1,23 @@
-use std::collections::BTreeMap;
-use crate::painter::BlendMode;
-use super::user_preferences::{self, KEY_CHOICES, MOUSE_BUTTON_CHOICES};
-use super::{State, Tool, SurfaceError};
 use super::ecs;
-
+use super::user_preferences;
+use super::{State, SurfaceError, Tool};
+use crate::painter::BlendMode;
 
 impl State {
-    fn draw_key_binding_editor(ui: &mut egui::Ui, id: &str, binding: &mut super::user_preferences::KeyBinding) {
-        ui.horizontal(|ui| {
-            ui.label("Key");
-            egui::ComboBox::from_id_salt(id)
-                .selected_text(&binding.key)
-                .show_ui(ui, |ui| {
-                    for key in KEY_CHOICES {
-                        ui.selectable_value(&mut binding.key, (*key).to_string(), *key);
-                    }
-                });
-        });
-        ui.horizontal(|ui| {
-            ui.checkbox(&mut binding.primary_mod, "Primary Mod (Ctrl/Cmd)");
-            ui.checkbox(&mut binding.ctrl, "Ctrl");
-            ui.checkbox(&mut binding.cmd, "Cmd");
-            ui.checkbox(&mut binding.alt, "Alt");
-            ui.checkbox(&mut binding.shift, "Shift");
-        });
-    }
-
-    fn draw_mouse_binding_editor(ui: &mut egui::Ui, id: &str, binding: &mut super::user_preferences::MouseBinding) {
-        ui.horizontal(|ui| {
-            ui.label("Button");
-            egui::ComboBox::from_id_salt(id)
-                .selected_text(&binding.button)
-                .show_ui(ui, |ui| {
-                    for button in MOUSE_BUTTON_CHOICES {
-                        ui.selectable_value(&mut binding.button, (*button).to_string(), *button);
-                    }
-                });
-        });
-    }
-
-    fn key_binding_signature(binding: &super::user_preferences::KeyBinding) -> String {
-        let mut parts: Vec<&str> = Vec::new();
-        if binding.primary_mod {
-            parts.push("PrimaryMod");
-        }
-        if binding.ctrl {
-            parts.push("Ctrl");
-        }
-        if binding.cmd {
-            parts.push("Cmd");
-        }
-        if binding.alt {
-            parts.push("Alt");
-        }
-        if binding.shift {
-            parts.push("Shift");
-        }
-        parts.push(&binding.key);
-        parts.join("+")
-    }
-
-    fn binding_conflicts(bindings: &super::user_preferences::InputBindings) -> Vec<String> {
-        let key_bindings = [
-            ("Orbit Modifier", &bindings.orbit_modifier),
-            ("Pan Modifier", &bindings.pan_modifier),
-            ("Undo", &bindings.undo),
-            ("Redo", &bindings.redo),
-            ("Clear Canvas", &bindings.clear_canvas),
-            ("Brush Size Down", &bindings.brush_size_down),
-            ("Brush Size Up", &bindings.brush_size_up),
-            ("Select Brush Tool", &bindings.tool_brush),
-            ("Select Eraser Tool", &bindings.tool_eraser),
-        ];
-
-        let mouse_bindings = [
-            ("Paint Button", &bindings.paint_button),
-            ("Pan Button", &bindings.pan_button),
-        ];
-
-        let mut by_combo: BTreeMap<String, Vec<&str>> = BTreeMap::new();
-
-        for (name, binding) in key_bindings {
-            let key = format!("Key:{}", Self::key_binding_signature(binding));
-            by_combo.entry(key).or_default().push(name);
-        }
-
-        for (name, binding) in mouse_bindings {
-            let key = format!("Mouse:{}", binding.button);
-            by_combo.entry(key).or_default().push(name);
-        }
-
-        let mut warnings = Vec::new();
-        for (combo, actions) in by_combo {
-            if actions.len() > 1 {
-                warnings.push(format!(
-                    "{} is assigned to multiple actions: {}",
-                    combo,
-                    actions.join(", ")
-                ));
-            }
-        }
-
-        warnings
-    }
-
     #[allow(deprecated)]
     pub fn render(&mut self) -> Result<(), SurfaceError> {
-        debug_assert!(self.main_ui.frame_begun, "Main UI frame was not begun by ECS lifecycle");
+        debug_assert!(
+            self.main_ui.frame_begun,
+            "Main UI frame was not begun by ECS lifecycle"
+        );
 
         let mut close_error = false;
         let mut dismiss_error_requested = false;
         if let Some(ref err) = self.ui_state.error_details {
-            let can_dismiss = self.ui_state.error_time.map_or(true, |t| t.elapsed().as_secs_f32() > 0.3);
+            let can_dismiss = self
+                .ui_state
+                .error_time
+                .map_or(true, |t| t.elapsed().as_secs_f32() > 0.3);
             egui::Window::new("Error Loading Model")
                 .collapsible(false)
                 .resizable(false)
@@ -126,7 +32,7 @@ impl State {
                             });
                         });
                         ui.add_space(8.0);
-                        
+
                         ui.label(egui::RichText::new(&err.message).color(egui::Color32::from_rgb(255, 100, 100)));
                         ui.add_space(8.0);
 
@@ -207,22 +113,39 @@ impl State {
 
                 ui.menu_button("Edit", |ui| {
                     let undo_enabled = !self.app_state.history().undo_stack.is_empty();
-                    let undo_label = if undo_enabled { "Undo (Ctrl+Z)" } else { "Undo" };
-                    if ui.add_enabled(undo_enabled, egui::Button::new(undo_label)).clicked() {
+                    let undo_label = if undo_enabled {
+                        "Undo (Ctrl+Z)"
+                    } else {
+                        "Undo"
+                    };
+                    if ui
+                        .add_enabled(undo_enabled, egui::Button::new(undo_label))
+                        .clicked()
+                    {
                         pending_ui_actions.push(ecs::events::UiActionEvent::Undo);
                         ui.close();
                     }
-                    
+
                     let redo_enabled = !self.app_state.history().redo_stack.is_empty();
-                    let redo_label = if redo_enabled { "Redo (Ctrl+Y)" } else { "Redo" };
-                    if ui.add_enabled(redo_enabled, egui::Button::new(redo_label)).clicked() {
+                    let redo_label = if redo_enabled {
+                        "Redo (Ctrl+Y)"
+                    } else {
+                        "Redo"
+                    };
+                    if ui
+                        .add_enabled(redo_enabled, egui::Button::new(redo_label))
+                        .clicked()
+                    {
                         pending_ui_actions.push(ecs::events::UiActionEvent::Redo);
                         ui.close();
                     }
                 });
 
                 ui.menu_button("Window", |ui| {
-                    if ui.selectable_label(self.app_state.ui().show_uv_viewer, "UV Viewer").clicked() {
+                    if ui
+                        .selectable_label(self.app_state.ui().show_uv_viewer, "UV Viewer")
+                        .clicked()
+                    {
                         pending_ui_actions.push(ecs::events::UiActionEvent::SetUvViewerVisible(
                             !self.app_state.ui().show_uv_viewer,
                         ));
@@ -231,7 +154,10 @@ impl State {
                 });
 
                 ui.separator();
-                if ui.selectable_label(self.app_state.ui().show_uv_viewer, "🗺 View UVs").clicked() {
+                if ui
+                    .selectable_label(self.app_state.ui().show_uv_viewer, "🗺 View UVs")
+                    .clicked()
+                {
                     pending_ui_actions.push(ecs::events::UiActionEvent::SetUvViewerVisible(
                         !self.app_state.ui().show_uv_viewer,
                     ));
@@ -256,7 +182,8 @@ impl State {
                     ui.separator();
                     ui.label("Scene:");
                     let active_scene_idx = self.viewport.document.active_scene_idx;
-                    let scene_name = self.viewport.document.scenes[active_scene_idx].name
+                    let scene_name = self.viewport.document.scenes[active_scene_idx]
+                        .name
                         .clone()
                         .unwrap_or_else(|| format!("Scene {}", active_scene_idx));
                     let mut selected_scene_idx = active_scene_idx;
@@ -264,50 +191,60 @@ impl State {
                         .selected_text(&scene_name)
                         .show_ui(ui, |ui| {
                             for (idx, _scene) in self.viewport.document.scenes.iter().enumerate() {
-                                let name = _scene.name.clone().unwrap_or_else(|| format!("Scene {}", idx));
+                                let name = _scene
+                                    .name
+                                    .clone()
+                                    .unwrap_or_else(|| format!("Scene {}", idx));
                                 ui.selectable_value(&mut selected_scene_idx, idx, name);
                             }
                         });
                     if selected_scene_idx != active_scene_idx {
-                        pending_ui_actions.push(ecs::events::UiActionEvent::SetActiveScene(selected_scene_idx));
+                        pending_ui_actions.push(ecs::events::UiActionEvent::SetActiveScene(
+                            selected_scene_idx,
+                        ));
                         log::info!("Switched active scene to index {}", selected_scene_idx);
                     }
                 }
             });
         });
 
-        egui::Panel::bottom("asset_shelf").resizable(true).min_size(60.0).show(&self.main_ui.egui_ctx, |ui| {
-            ui.heading("Asset Shelf");
-            ui.horizontal(|ui| {
-                ui.label("Assets will appear here...");
+        egui::Panel::bottom("asset_shelf")
+            .resizable(true)
+            .min_size(60.0)
+            .show(&self.main_ui.egui_ctx, |ui| {
+                ui.heading("Asset Shelf");
+                ui.horizontal(|ui| {
+                    ui.label("Assets will appear here...");
+                });
             });
-        });
 
-        egui::Panel::left("left_toolbar").resizable(false).show(&self.main_ui.egui_ctx, |ui| {
-            ui.heading("Tools");
-            ui.separator();
+        egui::Panel::left("left_toolbar")
+            .resizable(false)
+            .show(&self.main_ui.egui_ctx, |ui| {
+                ui.heading("Tools");
+                ui.separator();
 
-            let brush_btn = ui.selectable_label(
-                self.app_state.tool().active_tool == Tool::Brush,
-                format!("{} Brush", egui_phosphor::regular::PAINT_BRUSH),
-            );
-            if brush_btn.clicked() {
-                pending_tool_selection = Some(ecs::events::ToolKind::Brush);
-            }
+                let brush_btn = ui.selectable_label(
+                    self.app_state.tool().active_tool == Tool::Brush,
+                    format!("{} Brush", egui_phosphor::regular::PAINT_BRUSH),
+                );
+                if brush_btn.clicked() {
+                    pending_tool_selection = Some(ecs::events::ToolKind::Brush);
+                }
 
-            let eraser_btn = ui.selectable_label(
-                self.app_state.tool().active_tool == Tool::Eraser,
-                format!("{} Eraser", egui_phosphor::regular::ERASER),
-            );
-            if eraser_btn.clicked() {
-                pending_tool_selection = Some(ecs::events::ToolKind::Eraser);
-            }
+                let eraser_btn = ui.selectable_label(
+                    self.app_state.tool().active_tool == Tool::Eraser,
+                    format!("{} Eraser", egui_phosphor::regular::ERASER),
+                );
+                if eraser_btn.clicked() {
+                    pending_tool_selection = Some(ecs::events::ToolKind::Eraser);
+                }
 
-            ui.separator();
-            if ui.button("Clear All").clicked() {
-                pending_ui_actions.push(ecs::events::UiActionEvent::ClearCanvas);
-            }
-        });
+                ui.separator();
+                if ui.button("Clear All").clicked() {
+                    pending_ui_actions.push(ecs::events::UiActionEvent::ClearCanvas);
+                }
+            });
 
         egui::Panel::right("right_panel").default_size(280.0).show(&self.main_ui.egui_ctx, |ui| {
             ui.heading("Settings");
@@ -357,14 +294,14 @@ impl State {
 
                     ui.separator();
                     ui.label("Color:");
-                    
+
                     let mut color_f32 = [
                         self.app_state.canvas().brush_color[0] as f32 / 255.0,
                         self.app_state.canvas().brush_color[1] as f32 / 255.0,
                         self.app_state.canvas().brush_color[2] as f32 / 255.0,
                         self.app_state.canvas().brush_color[3] as f32 / 255.0,
                     ];
-                    
+
                     if ui.color_edit_button_rgba_unmultiplied(&mut color_f32).changed() {
                         let brush_color = [
                             (color_f32[0] * 255.0) as u8,
@@ -415,7 +352,7 @@ impl State {
                     ui.separator();
 
                     let layer_count = self.painter.layers.len();
-                    
+
                     for idx in (0..layer_count).rev() {
                         let is_active = self.painter.active_layer_idx == idx;
                         ui.horizontal(|ui| {
@@ -937,7 +874,10 @@ impl State {
                         calibrated
                     ));
                     if self.app_state.input().touchpad_pressure_stage > 0 {
-                        ui.label(format!("Force click stage: {}", self.app_state.input().touchpad_pressure_stage));
+                        ui.label(format!(
+                            "Force click stage: {}",
+                            self.app_state.input().touchpad_pressure_stage
+                        ));
                     }
 
                     let graph_size = egui::vec2(320.0, 140.0);
@@ -984,10 +924,15 @@ impl State {
         }
 
         if self.app_state.resources().is_loading_gltf {
-            let status_msg = self.asset_loader.gltf_loading_status.as_ref()
+            let status_msg = self
+                .asset_loader
+                .gltf_loading_status
+                .as_ref()
                 .and_then(|status| status.lock().ok())
                 .map(|g| g.clone())
-                .unwrap_or_else(|| "Reading and compiling model resources in the background".to_string());
+                .unwrap_or_else(|| {
+                    "Reading and compiling model resources in the background".to_string()
+                });
 
             egui::Window::new("Loading Model")
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -995,33 +940,42 @@ impl State {
                 .resizable(false)
                 .movable(false)
                 .title_bar(false)
-                .frame(egui::Frame::window(&self.main_ui.egui_ctx.global_style())
-                    .fill(egui::Color32::from_black_alpha(200))
-                    .inner_margin(25.0)
-                    .corner_radius(12.0))
+                .frame(
+                    egui::Frame::window(&self.main_ui.egui_ctx.global_style())
+                        .fill(egui::Color32::from_black_alpha(200))
+                        .inner_margin(25.0)
+                        .corner_radius(12.0),
+                )
                 .show(&self.main_ui.egui_ctx, |ui| {
                     ui.vertical_centered(|ui| {
                         ui.add(egui::Spinner::new().size(50.0));
                         ui.add_space(15.0);
-                        ui.label(egui::RichText::new("Loading glTF Model...")
-                            .size(18.0)
-                            .color(egui::Color32::WHITE)
-                            .strong());
+                        ui.label(
+                            egui::RichText::new("Loading glTF Model...")
+                                .size(18.0)
+                                .color(egui::Color32::WHITE)
+                                .strong(),
+                        );
                         ui.add_space(8.0);
-                        ui.label(egui::RichText::new(status_msg)
-                            .size(12.0)
-                            .color(egui::Color32::LIGHT_GRAY));
+                        ui.label(
+                            egui::RichText::new(status_msg)
+                                .size(12.0)
+                                .color(egui::Color32::LIGHT_GRAY),
+                        );
                     });
                 });
         }
 
-
-
         let egui_output = self.main_ui.egui_ctx.end_pass();
-        let paint_jobs = self.main_ui.egui_ctx.tessellate(egui_output.shapes, egui_output.pixels_per_point);
+        let paint_jobs = self
+            .main_ui
+            .egui_ctx
+            .tessellate(egui_output.shapes, egui_output.pixels_per_point);
 
         for (id, image_delta) in &egui_output.textures_delta.set {
-            self.main_ui.egui_renderer.update_texture(&self.device, &self.queue, *id, image_delta);
+            self.main_ui
+                .egui_renderer
+                .update_texture(&self.device, &self.queue, *id, image_delta);
         }
 
         let screen_descriptor = egui_wgpu::ScreenDescriptor {
@@ -1036,13 +990,19 @@ impl State {
             wgpu::CurrentSurfaceTexture::Outdated => return Err(SurfaceError::Outdated),
             wgpu::CurrentSurfaceTexture::Lost => return Err(SurfaceError::Lost),
             wgpu::CurrentSurfaceTexture::Occluded => return Err(SurfaceError::Timeout),
-            wgpu::CurrentSurfaceTexture::Validation => return Err(SurfaceError::Other("Validation error".into())),
+            wgpu::CurrentSurfaceTexture::Validation => {
+                return Err(SurfaceError::Other("Validation error".into()))
+            }
         };
-        let view = surface_texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let view = surface_texture
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Main Render Encoder"),
-        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Main Render Encoder"),
+            });
 
         self.main_ui.egui_renderer.update_buffers(
             &self.device,
@@ -1060,28 +1020,28 @@ impl State {
         );
 
         {
-            let mut egui_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Egui Render Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: None,
-                occlusion_query_set: None,
-                timestamp_writes: None,
-                multiview_mask: None,
-            }).forget_lifetime();
+            let mut egui_pass = encoder
+                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Egui Render Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    depth_stencil_attachment: None,
+                    occlusion_query_set: None,
+                    timestamp_writes: None,
+                    multiview_mask: None,
+                })
+                .forget_lifetime();
 
-            self.main_ui.egui_renderer.render(
-                &mut egui_pass,
-                &paint_jobs,
-                &screen_descriptor,
-            );
+            self.main_ui
+                .egui_renderer
+                .render(&mut egui_pass, &paint_jobs, &screen_descriptor);
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -1107,7 +1067,10 @@ impl State {
                 None => return Ok(()),
             };
 
-            debug_assert!(self.uv_ui.frame_begun, "UV UI frame was not begun by ECS lifecycle");
+            debug_assert!(
+                self.uv_ui.frame_begun,
+                "UV UI frame was not begun by ECS lifecycle"
+            );
 
             let num_tiles = self.viewport.document.num_udim_tiles.max(1) as usize;
             let show_uv_wireframe = self.app_state.ui().show_uv_wireframe;
@@ -1115,150 +1078,194 @@ impl State {
 
             #[allow(deprecated)]
             egui::CentralPanel::default().show(&viewer.egui_ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Source:");
-                
-                let current_source = self.app_state.ui().uv_viewer_source;
-                let mut selected_source = current_source;
-                let source_name = if current_source == 0 {
-                    "Composed Result".to_string()
-                } else {
-                    let idx = current_source - 1;
-                    if idx < self.painter.layers.len() {
-                        format!("Layer: {}", self.painter.layers[idx].name)
-                    } else {
-                        "Unknown Layer".to_string()
-                    }
-                };
-                
-                egui::ComboBox::from_id_salt("uv_viewer_source")
-                    .selected_text(&source_name)
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut selected_source, 0, "Composed Result");
-                        for idx in 0..self.painter.layers.len() {
-                            ui.selectable_value(
-                                &mut selected_source,
-                                idx + 1,
-                                format!("Layer: {}", self.painter.layers[idx].name),
-                            );
-                        }
-                    });
-                if selected_source != current_source {
-                    pending_ui_actions.push(ecs::events::UiActionEvent::SetUvViewerSource(
-                        selected_source,
-                    ));
-                }
-                
-                ui.add_space(15.0);
-                let mut wireframe = self.app_state.ui().show_uv_wireframe;
-                if ui.checkbox(&mut wireframe, "Show UV Wireframe").changed() {
-                    pending_ui_actions.push(ecs::events::UiActionEvent::SetUvWireframe(wireframe));
-                }
-                    
-                ui.add_space(20.0);
-                ui.label("Zoom:");
-                let mut uv_size = self.app_state.ui().uv_viewer_size;
-                if ui
-                    .add(egui::Slider::new(&mut uv_size, 64.0..=512.0).suffix("px"))
-                    .changed()
-                {
-                    pending_ui_actions.push(ecs::events::UiActionEvent::SetUvViewerSize(uv_size));
-                }
-            });
-            
-            ui.separator();
-            
-            egui::ScrollArea::both().show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    for tile_idx in 0..num_tiles {
-                        ui.vertical(|ui| {
-                            ui.label(egui::RichText::new(format!("UDIM Tile {} (U: {}..{})", tile_idx, tile_idx, tile_idx + 1)).strong());
-                            
-                            let tex_id = if self.app_state.ui().uv_viewer_source == 0 {
-                                if tile_idx < viewer.composite_tex_ids.len() {
-                                    Some(viewer.composite_tex_ids[tile_idx])
+                    ui.label("Source:");
+
+                    let current_source = self.app_state.ui().uv_viewer_source;
+                    let mut selected_source = current_source;
+                    let source_name = if current_source == 0 {
+                        "Composed Result".to_string()
+                    } else {
+                        let idx = current_source - 1;
+                        if idx < self.painter.layers.len() {
+                            format!("Layer: {}", self.painter.layers[idx].name)
+                        } else {
+                            "Unknown Layer".to_string()
+                        }
+                    };
+
+                    egui::ComboBox::from_id_salt("uv_viewer_source")
+                        .selected_text(&source_name)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut selected_source, 0, "Composed Result");
+                            for idx in 0..self.painter.layers.len() {
+                                ui.selectable_value(
+                                    &mut selected_source,
+                                    idx + 1,
+                                    format!("Layer: {}", self.painter.layers[idx].name),
+                                );
+                            }
+                        });
+                    if selected_source != current_source {
+                        pending_ui_actions.push(ecs::events::UiActionEvent::SetUvViewerSource(
+                            selected_source,
+                        ));
+                    }
+
+                    ui.add_space(15.0);
+                    let mut wireframe = self.app_state.ui().show_uv_wireframe;
+                    if ui.checkbox(&mut wireframe, "Show UV Wireframe").changed() {
+                        pending_ui_actions
+                            .push(ecs::events::UiActionEvent::SetUvWireframe(wireframe));
+                    }
+
+                    ui.add_space(20.0);
+                    ui.label("Zoom:");
+                    let mut uv_size = self.app_state.ui().uv_viewer_size;
+                    if ui
+                        .add(egui::Slider::new(&mut uv_size, 64.0..=512.0).suffix("px"))
+                        .changed()
+                    {
+                        pending_ui_actions
+                            .push(ecs::events::UiActionEvent::SetUvViewerSize(uv_size));
+                    }
+                });
+
+                ui.separator();
+
+                egui::ScrollArea::both().show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        for tile_idx in 0..num_tiles {
+                            ui.vertical(|ui| {
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "UDIM Tile {} (U: {}..{})",
+                                        tile_idx,
+                                        tile_idx,
+                                        tile_idx + 1
+                                    ))
+                                    .strong(),
+                                );
+
+                                let tex_id = if self.app_state.ui().uv_viewer_source == 0 {
+                                    if tile_idx < viewer.composite_tex_ids.len() {
+                                        Some(viewer.composite_tex_ids[tile_idx])
+                                    } else {
+                                        None
+                                    }
                                 } else {
-                                    None
-                                }
-                            } else {
-                                let layer_idx = self.app_state.ui().uv_viewer_source - 1;
-                                let global_view_idx = layer_idx * crate::painter::MAX_UDIMS + tile_idx;
-                                if global_view_idx < viewer.layer_tex_ids.len() {
-                                    Some(viewer.layer_tex_ids[global_view_idx])
-                                } else {
-                                    None
-                                }
-                            };
-                            
-                            if let Some(id) = tex_id {
-                                let img_size = self.app_state.ui().uv_viewer_size;
-                                let response = ui.image((id, egui::vec2(img_size, img_size)));
-                                let rect = response.rect;
-                                
-                                if show_uv_wireframe {
-                                    let stroke = egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 120)); // semi-transparent white
-                                    for (node, _) in &active_nodes {
-                                        if let Some(ref mesh) = node.mesh {
-                                            for primitive in &mesh.primitives {
-                                                for chunk in primitive.indices.chunks_exact(3) {
-                                                    let i0 = chunk[0] as usize;
-                                                    let i1 = chunk[1] as usize;
-                                                    let i2 = chunk[2] as usize;
-                                                    
-                                                    if i0 < primitive.vertices.len() && i1 < primitive.vertices.len() && i2 < primitive.vertices.len() {
-                                                        let uv0 = primitive.vertices[i0].tex_coords;
-                                                        let uv1 = primitive.vertices[i1].tex_coords;
-                                                        let uv2 = primitive.vertices[i2].tex_coords;
-                                                        
-                                                        let local_u0 = uv0[0] - tile_idx as f32;
-                                                        let local_u1 = uv1[0] - tile_idx as f32;
-                                                        let local_u2 = uv2[0] - tile_idx as f32;
-                                                        
-                                                        let in_tile = (local_u0 >= 0.0 && local_u0 <= 1.0) ||
-                                                                      (local_u1 >= 0.0 && local_u1 <= 1.0) ||
-                                                                      (local_u2 >= 0.0 && local_u2 <= 1.0);
-                                                                      
-                                                        if in_tile {
-                                                            let p0 = rect.min + egui::vec2(
-                                                                local_u0.clamp(0.0, 1.0) * rect.width(),
-                                                                (1.0 - uv0[1].clamp(0.0, 1.0)) * rect.height(),
-                                                            );
-                                                            let p1 = rect.min + egui::vec2(
-                                                                local_u1.clamp(0.0, 1.0) * rect.width(),
-                                                                (1.0 - uv1[1].clamp(0.0, 1.0)) * rect.height(),
-                                                            );
-                                                            let p2 = rect.min + egui::vec2(
-                                                                local_u2.clamp(0.0, 1.0) * rect.width(),
-                                                                (1.0 - uv2[1].clamp(0.0, 1.0)) * rect.height(),
-                                                            );
-                                                            
-                                                            ui.painter().line_segment([p0, p1], stroke);
-                                                            ui.painter().line_segment([p1, p2], stroke);
-                                                            ui.painter().line_segment([p2, p0], stroke);
+                                    let layer_idx = self.app_state.ui().uv_viewer_source - 1;
+                                    let global_view_idx =
+                                        layer_idx * crate::painter::MAX_UDIMS + tile_idx;
+                                    if global_view_idx < viewer.layer_tex_ids.len() {
+                                        Some(viewer.layer_tex_ids[global_view_idx])
+                                    } else {
+                                        None
+                                    }
+                                };
+
+                                if let Some(id) = tex_id {
+                                    let img_size = self.app_state.ui().uv_viewer_size;
+                                    let response = ui.image((id, egui::vec2(img_size, img_size)));
+                                    let rect = response.rect;
+
+                                    if show_uv_wireframe {
+                                        let stroke = egui::Stroke::new(
+                                            1.0,
+                                            egui::Color32::from_rgba_unmultiplied(
+                                                255, 255, 255, 120,
+                                            ),
+                                        ); // semi-transparent white
+                                        for (node, _) in &active_nodes {
+                                            if let Some(ref mesh) = node.mesh {
+                                                for primitive in &mesh.primitives {
+                                                    for chunk in primitive.indices.chunks_exact(3) {
+                                                        let i0 = chunk[0] as usize;
+                                                        let i1 = chunk[1] as usize;
+                                                        let i2 = chunk[2] as usize;
+
+                                                        if i0 < primitive.vertices.len()
+                                                            && i1 < primitive.vertices.len()
+                                                            && i2 < primitive.vertices.len()
+                                                        {
+                                                            let uv0 =
+                                                                primitive.vertices[i0].tex_coords;
+                                                            let uv1 =
+                                                                primitive.vertices[i1].tex_coords;
+                                                            let uv2 =
+                                                                primitive.vertices[i2].tex_coords;
+
+                                                            let local_u0 = uv0[0] - tile_idx as f32;
+                                                            let local_u1 = uv1[0] - tile_idx as f32;
+                                                            let local_u2 = uv2[0] - tile_idx as f32;
+
+                                                            let in_tile = (local_u0 >= 0.0
+                                                                && local_u0 <= 1.0)
+                                                                || (local_u1 >= 0.0
+                                                                    && local_u1 <= 1.0)
+                                                                || (local_u2 >= 0.0
+                                                                    && local_u2 <= 1.0);
+
+                                                            if in_tile {
+                                                                let p0 = rect.min
+                                                                    + egui::vec2(
+                                                                        local_u0.clamp(0.0, 1.0)
+                                                                            * rect.width(),
+                                                                        (1.0 - uv0[1]
+                                                                            .clamp(0.0, 1.0))
+                                                                            * rect.height(),
+                                                                    );
+                                                                let p1 = rect.min
+                                                                    + egui::vec2(
+                                                                        local_u1.clamp(0.0, 1.0)
+                                                                            * rect.width(),
+                                                                        (1.0 - uv1[1]
+                                                                            .clamp(0.0, 1.0))
+                                                                            * rect.height(),
+                                                                    );
+                                                                let p2 = rect.min
+                                                                    + egui::vec2(
+                                                                        local_u2.clamp(0.0, 1.0)
+                                                                            * rect.width(),
+                                                                        (1.0 - uv2[1]
+                                                                            .clamp(0.0, 1.0))
+                                                                            * rect.height(),
+                                                                    );
+
+                                                                ui.painter()
+                                                                    .line_segment([p0, p1], stroke);
+                                                                ui.painter()
+                                                                    .line_segment([p1, p2], stroke);
+                                                                ui.painter()
+                                                                    .line_segment([p2, p0], stroke);
+                                                            }
                                                         }
                                                     }
                                                 }
                                             }
                                         }
                                     }
+                                } else {
+                                    ui.label("No texture view");
                                 }
-                            } else {
-                                ui.label("No texture view");
+                            });
+                            if tile_idx + 1 < num_tiles {
+                                ui.add_space(10.0);
                             }
-                        });
-                        if tile_idx + 1 < num_tiles {
-                            ui.add_space(10.0);
                         }
-                    }
+                    });
                 });
-            });
             });
 
             let egui_output = viewer.egui_ctx.end_pass();
-            let paint_jobs = viewer.egui_ctx.tessellate(egui_output.shapes, egui_output.pixels_per_point);
+            let paint_jobs = viewer
+                .egui_ctx
+                .tessellate(egui_output.shapes, egui_output.pixels_per_point);
 
             for (id, image_delta) in &egui_output.textures_delta.set {
-                viewer.egui_renderer.update_texture(&self.device, &self.queue, *id, image_delta);
+                viewer
+                    .egui_renderer
+                    .update_texture(&self.device, &self.queue, *id, image_delta);
             }
 
             let screen_descriptor = egui_wgpu::ScreenDescriptor {
@@ -1273,13 +1280,19 @@ impl State {
                 wgpu::CurrentSurfaceTexture::Outdated => return Err(SurfaceError::Outdated),
                 wgpu::CurrentSurfaceTexture::Lost => return Err(SurfaceError::Lost),
                 wgpu::CurrentSurfaceTexture::Occluded => return Err(SurfaceError::Timeout),
-                wgpu::CurrentSurfaceTexture::Validation => return Err(SurfaceError::Other("Validation error".into())),
+                wgpu::CurrentSurfaceTexture::Validation => {
+                    return Err(SurfaceError::Other("Validation error".into()))
+                }
             };
-            let view = surface_texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let view = surface_texture
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
 
-            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("UV Viewer Render Encoder"),
-            });
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("UV Viewer Render Encoder"),
+                });
 
             viewer.egui_renderer.update_buffers(
                 &self.device,
@@ -1290,28 +1303,33 @@ impl State {
             );
 
             {
-                let mut egui_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("UV Viewer Egui Pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.15, g: 0.15, b: 0.15, a: 1.0 }),
-                            store: wgpu::StoreOp::Store,
-                        },
-                        depth_slice: None,
-                    })],
-                    depth_stencil_attachment: None,
-                    occlusion_query_set: None,
-                    timestamp_writes: None,
-                    multiview_mask: None,
-                }).forget_lifetime();
+                let mut egui_pass = encoder
+                    .begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("UV Viewer Egui Pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color {
+                                    r: 0.15,
+                                    g: 0.15,
+                                    b: 0.15,
+                                    a: 1.0,
+                                }),
+                                store: wgpu::StoreOp::Store,
+                            },
+                            depth_slice: None,
+                        })],
+                        depth_stencil_attachment: None,
+                        occlusion_query_set: None,
+                        timestamp_writes: None,
+                        multiview_mask: None,
+                    })
+                    .forget_lifetime();
 
-                viewer.egui_renderer.render(
-                    &mut egui_pass,
-                    &paint_jobs,
-                    &screen_descriptor,
-                );
+                viewer
+                    .egui_renderer
+                    .render(&mut egui_pass, &paint_jobs, &screen_descriptor);
             }
 
             self.queue.submit(std::iter::once(encoder.finish()));
@@ -1331,7 +1349,7 @@ impl State {
         self.ecs_runtime.ui_frame_ops.draw_uv_egui_panels = false;
         self.ecs_runtime.ui_frame_ops.end_uv_egui_frame_and_upload = false;
         self.uv_ui.frame_begun = false;
-        
+
         Ok(())
     }
 }
