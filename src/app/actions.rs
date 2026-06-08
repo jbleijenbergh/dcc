@@ -138,12 +138,8 @@ impl State {
     pub fn load_gltf_file(&mut self, path: &std::path::Path) {
         let (tx, rx) = std::sync::mpsc::channel();
         self.gltf_rx = Some(rx);
-        crate::app::architecture::reducer::dispatch(
-            self,
-            crate::app::architecture::message::Message::Ui(
-                crate::app::architecture::message::UiAction::StartGltfLoad,
-            ),
-        );
+        self.emit_ui_action(crate::app::ecs::events::UiActionEvent::StartGltfLoad);
+        self.flush_ecs_events_to_reducer();
         self.loading_path = Some(path.to_path_buf());
 
         // Extract strokes from non-fill layers to clone and reproject in background

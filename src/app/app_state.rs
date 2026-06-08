@@ -62,7 +62,6 @@ impl AppState {
         }
     }
 
-    // Mutable accessors - crate-internal (reducer only)
     pub(crate) fn document_mut(&mut self) -> &mut DocumentState {
         &mut self.document
     }

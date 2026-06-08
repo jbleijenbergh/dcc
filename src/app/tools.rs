@@ -1,10 +1,9 @@
 use crate::app::input::PointerData;
-use super::message::ToolKind;
 use crate::app::types::Tool;
 use crate::app::State;
 
 pub trait ToolHandler {
-    fn kind(&self) -> ToolKind;
+    fn kind(&self) -> Tool;
     fn on_pointer_down(&mut self, state: &mut State, pointer: &PointerData);
     fn on_pointer_move(&mut self, state: &mut State, pointer: &PointerData);
     fn on_pointer_up(&mut self, state: &mut State, pointer: &PointerData);
@@ -18,8 +17,8 @@ pub struct BrushTool;
 pub struct EraserTool;
 
 impl ToolHandler for BrushTool {
-    fn kind(&self) -> ToolKind {
-        ToolKind::Brush
+    fn kind(&self) -> Tool {
+        Tool::Brush
     }
 
     fn on_pointer_down(&mut self, state: &mut State, _pointer: &PointerData) {
@@ -45,8 +44,8 @@ impl ToolHandler for BrushTool {
 }
 
 impl ToolHandler for EraserTool {
-    fn kind(&self) -> ToolKind {
-        ToolKind::Eraser
+    fn kind(&self) -> Tool {
+        Tool::Eraser
     }
 
     fn on_pointer_down(&mut self, state: &mut State, _pointer: &PointerData) {

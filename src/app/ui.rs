@@ -3,7 +3,7 @@ use std::time::Instant;
 use super::LoadError;
 use crate::mesh::{MaterialInfo, Node, Mesh};
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(super) struct TransientUiState {
     pub error_details: Option<LoadError>,
     pub error_time: Option<Instant>,
