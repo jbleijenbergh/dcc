@@ -42,7 +42,7 @@ impl State {
         if let Some(hit) = hit_opt {
             let paint_start = std::time::Instant::now();
 
-            if self.interaction.stroke_in_progress.is_none() && !is_eraser {
+            if self.interaction.stroke_in_progress.is_none() {
                 self.interaction.stroke_in_progress = Some(crate::painter::PaintStroke {
                     points: Vec::new(),
                     uv_points: Vec::new(),
@@ -51,7 +51,7 @@ impl State {
                     color: brush_rgba,
                     radius: effective_size,
                     hardness: self.app_state.canvas().brush_hardness,
-                    is_eraser: false,
+                    is_eraser,
                 });
             }
             if let Some(ref mut stroke) = self.interaction.stroke_in_progress {
