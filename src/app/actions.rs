@@ -2,7 +2,7 @@ use super::{State, Tool};
 
 impl State {
     pub fn paint_at_cursor(&mut self) {
-        if self.egui_ctx.egui_wants_pointer_input() {
+        if self.main_ui.egui_ctx.egui_wants_pointer_input() {
             return;
         }
 
@@ -137,14 +137,10 @@ impl State {
 
     pub fn load_gltf_file(&mut self, path: &std::path::Path) {
         let (tx, rx) = std::sync::mpsc::channel();
-        self.gltf_rx = Some(rx);
-        crate::app::architecture::reducer::dispatch(
-            self,
-            crate::app::architecture::message::Message::Ui(
-                crate::app::architecture::message::UiAction::StartGltfLoad,
-            ),
-        );
-        self.loading_path = Some(path.to_path_buf());
+        self.asset_loader.gltf_rx = Some(rx);
+        self.emit_ui_action(crate::app::ecs::events::UiActionEvent::StartGltfLoad);
+        self.process_ecs_step();
+        self.asset_loader.loading_path = Some(path.to_path_buf());
 
         // Extract strokes from non-fill layers to clone and reproject in background
         let mut strokes_to_reproject = Vec::new();
@@ -157,7 +153,7 @@ impl State {
         }
 
         let status = std::sync::Arc::new(std::sync::Mutex::new("Reading glTF file...".to_string()));
-        self.gltf_loading_status = Some(status.clone());
+        self.asset_loader.gltf_loading_status = Some(status.clone());
 
         let path = path.to_path_buf();
         let device = self.device.clone();

@@ -25,9 +25,10 @@ The DCC Painter application now supports pressure-sensitive input from Wacom tab
 
 ### Event Flow
 1. When you use a Wacom tablet, the system sends `WindowEvent::Touch` events
-2. The app extracts pressure from `touch.force` (either `Normalized` or `Calibrated` force)
-3. Pressure is applied to brush size and opacity in `paint_at_cursor()`
-4. Strokes are recorded with pressure-sensitive parameters
+2. Input normalization extracts pressure from `touch.force` (either `Normalized` or `Calibrated` force)
+3. ECS `AppEvent` input/tool commands are emitted and processed in the frame update path
+4. Pressure is applied to brush size and opacity in `paint_at_cursor()`
+5. Strokes are recorded with pressure-sensitive parameters
 
 ### Code Changes
 
@@ -37,11 +38,15 @@ pen_pressure: f32,       // 0.0 to 1.0 (from touch force)
 has_tablet_input: bool,  // Track if we're receiving tablet events
 ```
 
-**Input Handler (src/app/mod.rs):**
-- Added `WindowEvent::Touch` handler
+**Input Normalization (`src/app/input/mod.rs`):**
+- Handles `WindowEvent::Touch` normalization
 - Extracts pressure from `Force::Normalized` or `Force::Calibrated`
-- Updates cursor position from touch location
-- Manages touch phases (Started/Moved/Ended/Cancelled)
+- Emits ECS input/tool events for touch phases (Started/Moved/Ended/Cancelled)
+- Updates pointer position and modifier snapshots consistently with other input sources
+
+**Runtime Event Processing (`src/app/mod.rs`):**
+- Drains normalized ECS events during frame update
+- Applies input/tool/domain updates in ECS-native event execution path
 
 **Paint Function (src/app/actions.rs):**
 - Applies pressure scaling to brush size: `effective_size = base_size * (0.2 + 0.8 * pressure)`

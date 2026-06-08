@@ -44,30 +44,24 @@ impl ApplicationHandler for App {
                 match event {
                     WindowEvent::CloseRequested => event_loop.exit(),
                     WindowEvent::Resized(physical_size) => {
-                        state.resize(physical_size);
+                        state.queue_main_window_resize(physical_size.width, physical_size.height);
                     }
                     WindowEvent::ScaleFactorChanged { .. } => {
-                        state.resize(state.window.inner_size());
+                        let size = state.window.inner_size();
+                        state.queue_main_window_resize(size.width, size.height);
                     }
                     WindowEvent::RedrawRequested => {
                         let size = state.window.inner_size();
                         if size.width > 0 && size.height > 0 {
-                            state.update(event_loop);
-                            match state.render() {
-                                Ok(_) => {}
-                                Err(app::SurfaceError::Lost | app::SurfaceError::Outdated) => {
-                                    state.resize(state.size);
-                                }
-                                Err(app::SurfaceError::Timeout) => {}
-                                Err(app::SurfaceError::Other(e)) => {
-                                    log::error!("Render error: {:?}", e);
-                                }
+                            state.queue_main_redraw();
+                            if let Err(app::SurfaceError::Other(e)) = state.update(event_loop) {
+                                log::error!("Render error: {:?}", e);
                             }
                         }
                     }
                     _ => {}
                 }
-            } else if let Some(ref mut viewer) = state.uv_viewer {
+            } else if let Some(ref mut viewer) = state.uv_viewer_mut() {
                 if window_id == viewer.window.id() {
                     let egui_resp = viewer.egui_state.on_window_event(&*viewer.window, &event);
                     if egui_resp.consumed {
@@ -75,20 +69,21 @@ impl ApplicationHandler for App {
                     }
                     match event {
                         WindowEvent::CloseRequested => {
-                            state.uv_viewer = None;
+                            state.clear_uv_viewer_window();
                             state.set_uv_viewer_visible(false);
                         }
                         WindowEvent::Resized(physical_size) => {
-                            state.resize_uv_viewer(physical_size.width, physical_size.height);
+                            state.queue_uv_window_resize(physical_size.width, physical_size.height);
                         }
                         WindowEvent::ScaleFactorChanged { .. } => {
                             let size = viewer.window.inner_size();
-                            state.resize_uv_viewer(size.width, size.height);
+                            state.queue_uv_window_resize(size.width, size.height);
                         }
                         WindowEvent::RedrawRequested => {
                             let size = viewer.window.inner_size();
                             if size.width > 0 && size.height > 0 {
-                                if let Err(e) = state.render_uv_viewer() {
+                                state.queue_uv_redraw();
+                                if let Err(e) = state.update(event_loop) {
                                     log::error!("UV viewer render error: {:?}", e);
                                 }
                             }
@@ -106,7 +101,7 @@ impl ApplicationHandler for App {
             if size.width > 0 && size.height > 0 {
                 state.window.request_redraw();
             }
-            if let Some(ref viewer) = state.uv_viewer {
+            if let Some(ref viewer) = state.uv_viewer() {
                 let size = viewer.window.inner_size();
                 if size.width > 0 && size.height > 0 {
                     viewer.window.request_redraw();

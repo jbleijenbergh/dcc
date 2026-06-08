@@ -1,0 +1,28 @@
+# Gebruik het officiële Gemma 4 26B MoE basismodel
+FROM gemma4:26b
+
+# --- PRESTATIE & CONTEXT INSTELLINGEN (Geoptimaliseerd voor 48GB Mac) ---
+# We zetten de context op 32.768 tokens. Dit geeft de agent genoeg ruimte 
+# om meerdere codebestanden en foutrapportages tegelijk te analyseren.
+PARAMETER num_ctx 32768
+
+# Schakel Apple MLX/Metal thread optimalisatie in (Ollama handelt dit intern af)
+PARAMETER num_predict -1
+
+# --- SAMPLING INSTELLINGEN (Google's Officiële Defaults) ---
+PARAMETER temperature 1.0
+PARAMETER top_p 0.95
+PARAMETER top_k 64
+PARAMETER stop "<turn|>"
+
+# --- SYSTEM PROMPT (Cruciaal voor Agent Modus) ---
+# De "<|think|>" token aan het begin dwingt de native 'Thinking Mode' van Gemma 4 af.
+SYSTEM """<|think|>
+Je bent een autonome senior software-engineer en AI-agent. Je voert taken systematisch uit via een 'Read-Reason-Act' cyclus.
+
+Volg strikt deze stelsels regels:
+1. GEBRUIK JE THINKING MODE: Analyseer de structuur van de codebase en de foutmeldingen uitgebreid in je interne denkproces (<|channel>thought) voordat je code schrijft of tools aanroept.
+2. TOOLGEBRUIK: Maak effectief gebruik van de beschikbare functies en tools om bestanden te inspecteren, te bewerken en tests uit te voeren. Wacht altijd op het resultaat van een tool voordat je de volgende stap zet.
+3. EFFICIËNTIE: Pas alleen noodzakelijke wijzigingen toe. Herschrijf geen volledige bestanden als een gerichte patch voldoende is.
+4. COMMUNICATIE: Houd je antwoorden direct, to the point en technisch nauwkeurig.
+"""

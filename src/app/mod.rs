@@ -2,12 +2,15 @@ mod ui;
 mod actions;
 mod types;
 mod user_preferences;
-mod architecture;
+mod app_state;
+mod tools;
+mod ecs;
 pub(crate) mod input;
 
 pub use types::{Tool, SurfaceError, LoadError};
 
 use std::collections::BTreeMap;
+use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::sync::Arc;
 use winit::event::WindowEvent;
@@ -20,6 +23,245 @@ pub(crate) struct InteractionState {
     pub stroke_in_progress: Option<crate::painter::PaintStroke>,
     pub last_hit_uv: Option<glam::Vec2>,
     pub last_hit_pos: Option<glam::Vec3>,
+}
+
+/// Host-side ECS coordinator state.
+///
+/// Keeps ECS runtime together with frame lifecycle flags to reduce `State`
+/// ownership surface while preserving existing call patterns.
+pub(crate) struct HostEcsRuntime {
+    runtime: ecs::EcsRuntime,
+    ui_frame_ops: ecs::PendingUiFrameOpsResource,
+}
+
+impl HostEcsRuntime {
+    fn new(runtime: ecs::EcsRuntime) -> Self {
+        Self {
+            runtime,
+            ui_frame_ops: ecs::PendingUiFrameOpsResource::default(),
+        }
+    }
+}
+
+impl Deref for HostEcsRuntime {
+    type Target = ecs::EcsRuntime;
+
+    fn deref(&self) -> &Self::Target {
+        &self.runtime
+    }
+}
+
+impl DerefMut for HostEcsRuntime {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.runtime
+    }
+}
+
+/// Host-side UV window runtime state.
+#[derive(Default)]
+pub(crate) struct UvUiRuntime {
+    viewer: Option<UvViewerWindow>,
+    frame_begun: bool,
+}
+
+type GltfLoadResult =
+    Result<(crate::mesh::Document, String, Vec<Vec<crate::painter::PaintStroke>>), String>;
+
+#[derive(Default)]
+pub(crate) struct AssetLoadCoordinator {
+    gltf_rx: Option<std::sync::mpsc::Receiver<GltfLoadResult>>,
+    gltf_loading_status: Option<Arc<std::sync::Mutex<String>>>,
+    loading_path: Option<std::path::PathBuf>,
+}
+
+pub(crate) struct RenderHostCoordinator {
+    supported_present_modes: Vec<wgpu::PresentMode>,
+}
+
+impl RenderHostCoordinator {
+    fn new(supported_present_modes: Vec<wgpu::PresentMode>) -> Self {
+        Self { supported_present_modes }
+    }
+
+    fn supports_present_mode(&self, mode: wgpu::PresentMode) -> bool {
+        self.supported_present_modes.contains(&mode)
+    }
+
+    fn handle_render_error(
+        &self,
+        ecs_runtime: &mut ecs::EcsRuntime,
+        surface: ecs::events::RenderSurfaceKind,
+        err: SurfaceError,
+    ) -> Result<(), SurfaceError> {
+        match err {
+            SurfaceError::Lost => ecs_runtime.send_render_failure_event(
+                ecs::events::RenderFailureEvent {
+                    surface,
+                    kind: ecs::events::RenderFailureKind::Lost,
+                },
+            ),
+            SurfaceError::Outdated => ecs_runtime.send_render_failure_event(
+                ecs::events::RenderFailureEvent {
+                    surface,
+                    kind: ecs::events::RenderFailureKind::Outdated,
+                },
+            ),
+            SurfaceError::Timeout => {}
+            SurfaceError::Other(e) => return Err(SurfaceError::Other(e)),
+        }
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct SurfaceHostCoordinator;
+
+impl SurfaceHostCoordinator {
+    fn apply_pending_surface_ops(
+        &self,
+        surface_ops: ecs::PendingSurfaceOpsResource,
+        size: &mut winit::dpi::PhysicalSize<u32>,
+        config: &mut wgpu::SurfaceConfiguration,
+        surface: &wgpu::Surface<'static>,
+        device: &Arc<wgpu::Device>,
+        depth_texture: &mut wgpu::Texture,
+        depth_view: &mut wgpu::TextureView,
+        viewport: &mut crate::viewport::Viewport,
+        uv_viewer: &mut Option<UvViewerWindow>,
+        ecs_runtime: &mut HostEcsRuntime,
+    ) {
+        if let Some((width, height)) = surface_ops.main_resize {
+            self.resize_main_surface(
+                winit::dpi::PhysicalSize::new(width, height),
+                size,
+                config,
+                surface,
+                device,
+                depth_texture,
+                depth_view,
+                viewport,
+            );
+        }
+        if let Some((width, height)) = surface_ops.uv_resize {
+            self.resize_uv_surface(width, height, uv_viewer, device, ecs_runtime);
+        }
+    }
+
+    fn resize_main_surface(
+        &self,
+        new_size: winit::dpi::PhysicalSize<u32>,
+        size: &mut winit::dpi::PhysicalSize<u32>,
+        config: &mut wgpu::SurfaceConfiguration,
+        surface: &wgpu::Surface<'static>,
+        device: &Arc<wgpu::Device>,
+        depth_texture: &mut wgpu::Texture,
+        depth_view: &mut wgpu::TextureView,
+        viewport: &mut crate::viewport::Viewport,
+    ) {
+        if new_size.width > 0 && new_size.height > 0 {
+            *size = new_size;
+            config.width = new_size.width;
+            config.height = new_size.height;
+            surface.configure(device, config);
+
+            let (new_depth_texture, new_depth_view) =
+                crate::viewport::create_depth_texture(device, config, "depth_texture");
+            *depth_texture = new_depth_texture;
+            *depth_view = new_depth_view;
+
+            viewport.camera.aspect = new_size.width as f32 / new_size.height as f32;
+
+            log::info!("Resized to: {}x{}", new_size.width, new_size.height);
+        }
+    }
+
+    fn resize_uv_surface(
+        &self,
+        width: u32,
+        height: u32,
+        uv_viewer: &mut Option<UvViewerWindow>,
+        device: &Arc<wgpu::Device>,
+        ecs_runtime: &mut HostEcsRuntime,
+    ) {
+        if let Some(ref mut viewer) = uv_viewer {
+            if width > 0 && height > 0 {
+                viewer.config.width = width;
+                viewer.config.height = height;
+                viewer.surface.configure(device, &viewer.config);
+                ecs_runtime.set_uv_surface_size(width, height);
+            }
+        }
+    }
+
+    fn queue_main_window_resize(
+        &self,
+        ecs_runtime: &mut HostEcsRuntime,
+        width: u32,
+        height: u32,
+    ) {
+        ecs_runtime.send_window_surface_event(ecs::events::WindowSurfaceEvent::MainWindowResized {
+            width,
+            height,
+        });
+    }
+
+    fn queue_uv_window_resize(
+        &self,
+        ecs_runtime: &mut HostEcsRuntime,
+        width: u32,
+        height: u32,
+    ) {
+        ecs_runtime.send_window_surface_event(ecs::events::WindowSurfaceEvent::UvWindowResized {
+            width,
+            height,
+        });
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct RenderSchedulingCoordinator;
+
+impl RenderSchedulingCoordinator {
+    fn queue_main_redraw(&self, ecs_runtime: &mut HostEcsRuntime) {
+        ecs_runtime.send_redraw_event(ecs::events::RedrawEvent::MainSurface);
+    }
+
+    fn queue_uv_redraw(&self, ecs_runtime: &mut HostEcsRuntime) {
+        ecs_runtime.send_redraw_event(ecs::events::RedrawEvent::UvSurface);
+    }
+
+    fn should_render_main_surface(&self, render_ops: &ecs::PendingRenderOpsResource) -> bool {
+        render_ops.render_main_surface
+            || render_ops.render_3d_viewport_pass
+            || render_ops.render_paint_composite_pass
+    }
+
+    fn should_render_uv_surface(&self, render_ops: &ecs::PendingRenderOpsResource) -> bool {
+        render_ops.render_uv_surface
+    }
+}
+
+/// Host-side main window egui runtime state.
+pub(crate) struct MainUiRuntime {
+    egui_ctx: egui::Context,
+    egui_state: egui_winit::State,
+    egui_renderer: egui_wgpu::Renderer,
+    frame_begun: bool,
+}
+
+impl MainUiRuntime {
+    fn new(
+        egui_ctx: egui::Context,
+        egui_state: egui_winit::State,
+        egui_renderer: egui_wgpu::Renderer,
+    ) -> Self {
+        Self {
+            egui_ctx,
+            egui_state,
+            egui_renderer,
+            frame_begun: false,
+        }
+    }
 }
 
 pub struct State {
@@ -36,33 +278,52 @@ pub struct State {
     depth_view: wgpu::TextureView,
     pub painter: crate::painter::Painter,
 
-    // Egui state
-    egui_ctx: egui::Context,
-    egui_state: egui_winit::State,
-    egui_renderer: egui_wgpu::Renderer,
+    // Main window egui state
+    main_ui: MainUiRuntime,
     
     // WGPU instance, adapter & UV viewer window
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
-    pub uv_viewer: Option<UvViewerWindow>,
+    uv_ui: UvUiRuntime,
 
     // Async loading state
-    gltf_rx: Option<std::sync::mpsc::Receiver<Result<(crate::mesh::Document, String, Vec<Vec<crate::painter::PaintStroke>>), String>>>,
-    gltf_loading_status: Option<Arc<std::sync::Mutex<String>>>,
+    asset_loader: AssetLoadCoordinator,
+    render_host: RenderHostCoordinator,
+    surface_host: SurfaceHostCoordinator,
+    render_scheduler: RenderSchedulingCoordinator,
 
     pub import_settings: crate::mesh::ImportSettings,
     interaction: InteractionState,
-    loading_path: Option<std::path::PathBuf>,
-    supported_present_modes: Vec<wgpu::PresentMode>,
 
     preferences: UserPreferences,
     preferences_path: PathBuf,
     ui_state: ui::TransientUiState,
 
-    pub app_state: architecture::state::AppState,
+    pub app_state: app_state::AppState,
+    
+    // ECS runtime
+    pub(crate) ecs_runtime: HostEcsRuntime,
 }
 
 impl State {
+    pub fn uv_viewer(&self) -> Option<&UvViewerWindow> {
+        self.uv_ui.viewer.as_ref()
+    }
+
+    pub fn uv_viewer_mut(&mut self) -> Option<&mut UvViewerWindow> {
+        self.uv_ui.viewer.as_mut()
+    }
+
+    pub fn clear_uv_viewer_window(&mut self) {
+        self.uv_ui.viewer = None;
+    }
+
+    fn process_ecs_step(&mut self) {
+        self.ecs_runtime.sync_domain_state_from(&self.app_state);
+        self.ecs_runtime.tick();
+        self.apply_pending_domain_host_ops();
+    }
+
     pub async fn new(window: Arc<Window>) -> Result<Self, String> {
         let size = window.inner_size();
         log::info!("Creating State with window size: {}x{}", size.width, size.height);
@@ -165,6 +426,36 @@ impl State {
         let initial_layer_count = painter.layers.len();
         let initial_num_udims = viewport.document.num_udim_tiles;
 
+        let mut ecs_runtime = ecs::EcsRuntime::new();
+
+        let app_state = {
+            let mut state = app_state::AppState::new();
+            state.document_mut().active_layer_idx = 0;
+            state.document_mut().layer_count = initial_layer_count;
+            state.document_mut().current_mesh = "Sphere".to_string();
+            state.document_mut().num_udim_tiles = initial_num_udims;
+            state.canvas_mut().brush_size = 25.0;
+            state.canvas_mut().brush_color = [220, 50, 50, 255];
+            state.canvas_mut().brush_hardness = 0.5;
+            state.ui_mut().show_uv_wireframe = true;
+            state
+        };
+
+        // Register resources into the ECS world
+        ecs_runtime.register_domain_state(app_state.clone());
+        ecs_runtime.register_interaction_state(ecs::InteractionStateResource::default());
+        ecs_runtime.register_preferences(preferences.clone());
+        ecs_runtime.register_ui_state(ui::TransientUiState::default());
+        ecs_runtime.register_main_ui_resource(egui_ctx.clone(), true, true);
+        ecs_runtime.update_uv_ui_resource(None, false, false);
+        ecs_runtime.register_gpu_context(
+            instance.clone(),
+            adapter.clone(),
+            device.clone(),
+            queue.clone(),
+        );
+        ecs_runtime.register_surface_registry(size.width, size.height);
+
         let state = Self {
             window,
             surface,
@@ -176,38 +467,26 @@ impl State {
             depth_texture,
             depth_view,
             painter,
-            egui_ctx,
-            egui_state,
-            egui_renderer,
+            main_ui: MainUiRuntime::new(egui_ctx, egui_state, egui_renderer),
             instance,
             adapter,
-            uv_viewer: None,
-            gltf_rx: None,
-            gltf_loading_status: None,
+            uv_ui: UvUiRuntime::default(),
+            asset_loader: AssetLoadCoordinator::default(),
+            render_host: RenderHostCoordinator::new(surface_caps.present_modes),
+            surface_host: SurfaceHostCoordinator::default(),
+            render_scheduler: RenderSchedulingCoordinator::default(),
             import_settings: crate::mesh::ImportSettings {
                 seams_option: crate::mesh::SeamsOption::GenerateMissing,
                 margin_size: crate::mesh::MarginSize::Medium,
                 island_orientation: crate::mesh::IslandOrientation::AlignWith3DMesh,
             },
             interaction: InteractionState::default(),
-            loading_path: None,
-            supported_present_modes: surface_caps.present_modes,
 
             preferences,
             preferences_path,
             ui_state: ui::TransientUiState::default(),
-            app_state: {
-                let mut state = architecture::state::AppState::new();
-                state.document_mut().active_layer_idx = 0;
-                state.document_mut().layer_count = initial_layer_count;
-                state.document_mut().current_mesh = "Sphere".to_string();
-                state.document_mut().num_udim_tiles = initial_num_udims;
-                state.canvas_mut().brush_size = 25.0;
-                state.canvas_mut().brush_color = [220, 50, 50, 255];
-                state.canvas_mut().brush_hardness = 0.5;
-                state.ui_mut().show_uv_wireframe = true;
-                state
-            },
+            app_state,
+            ecs_runtime: HostEcsRuntime::new(ecs_runtime),
         };
 
         if !state.preferences_path.exists() {
@@ -220,20 +499,16 @@ impl State {
     }
 
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
-        if new_size.width > 0 && new_size.height > 0 {
-            self.size = new_size;
-            self.config.width = new_size.width;
-            self.config.height = new_size.height;
-            self.surface.configure(&self.device, &self.config);
-
-            let (depth_texture, depth_view) = crate::viewport::create_depth_texture(&self.device, &self.config, "depth_texture");
-            self.depth_texture = depth_texture;
-            self.depth_view = depth_view;
-
-            self.viewport.camera.aspect = new_size.width as f32 / new_size.height as f32;
-
-            log::info!("Resized to: {}x{}", new_size.width, new_size.height);
-        }
+        self.surface_host.resize_main_surface(
+            new_size,
+            &mut self.size,
+            &mut self.config,
+            &self.surface,
+            &self.device,
+            &mut self.depth_texture,
+            &mut self.depth_view,
+            &mut self.viewport,
+        );
     }
 
     pub fn calibrated_pressure(&self) -> f32 {
@@ -264,14 +539,15 @@ impl State {
     }
 
     pub fn input(&mut self, event: &WindowEvent) -> bool {
-        let egui_resp = self.egui_state.on_window_event(&*self.window, event);
+        let egui_resp = self.main_ui.egui_state.on_window_event(&*self.window, event);
         if egui_resp.consumed {
             return true;
         }
-        let messages = input::normalize_window_event(self.app_state.input(), &self.preferences.bindings, event);
+        let events = input::normalize_window_event(self.app_state.input(), &self.preferences.bindings, event);
         let mut consumed = false;
-        for message in messages {
-            consumed |= architecture::reducer::dispatch(self, message);
+        for event in events {
+            self.emit_event(event);
+            consumed = true;
         }
 
         self.sync_app_state_snapshot();
@@ -304,6 +580,17 @@ impl State {
         self.app_state.history_mut().redo_len = self.app_state.history().redo_stack.len();
 
         self.app_state.input_mut().pan_modifier = self.app_state.input().alt;
+    }
+
+    /// Emit an ECS event into the runtime's event queue.
+    ///
+    /// Runtime input and command routing is ECS-native.
+    pub fn emit_event(&mut self, event: ecs::events::AppEvent) {
+        self.ecs_runtime.send_event(event);
+    }
+
+    fn emit_ui_action(&mut self, action: ecs::events::UiActionEvent) {
+        self.emit_event(ecs::events::AppEvent::Ui(action));
     }
 
     fn draw_key_binding_editor(ui: &mut egui::Ui, id: &str, binding: &mut user_preferences::KeyBinding) {
@@ -404,25 +691,49 @@ impl State {
         warnings
     }
 
-    pub fn update(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-        if let Some(ref rx) = self.gltf_rx {
+    pub fn update(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) -> Result<(), SurfaceError> {
+        // Phase 1: ECS schedule tick + host adapter consumption.
+        self.process_ecs_step();
+
+        // Phase 4.1: Apply pending ECS-driven surface operations.
+        let surface_ops = self.ecs_runtime.take_pending_surface_ops();
+        self.surface_host.apply_pending_surface_ops(
+            surface_ops,
+            &mut self.size,
+            &mut self.config,
+            &self.surface,
+            &self.device,
+            &mut self.depth_texture,
+            &mut self.depth_view,
+            &mut self.viewport,
+            &mut self.uv_ui.viewer,
+            &mut self.ecs_runtime,
+        );
+
+        // Phase 5.1: Consume ECS-owned UI lifecycle operations.
+        // Rendering code remains in host methods for now; this validates ECS stage orchestration.
+        self.ecs_runtime.ui_frame_ops = self.ecs_runtime.take_pending_ui_frame_ops();
+
+        // Phase 4.2: Apply pending prepare-stage GPU ops from ECS.
+        let prepare_ops = self.ecs_runtime.take_pending_prepare_ops();
+        if prepare_ops.update_main_camera_uniform {
+            self.viewport.update_camera(&self.queue);
+        }
+
+        if let Some(ref rx) = self.asset_loader.gltf_rx {
             if let Ok(res) = rx.try_recv() {
-                self.gltf_rx = None;
-                self.gltf_loading_status = None;
-                let path = self.loading_path.take().unwrap_or_default();
+            self.asset_loader.gltf_rx = None;
+            self.asset_loader.gltf_loading_status = None;
+            let path = self.asset_loader.loading_path.take().unwrap_or_default();
                 match res {
                     Ok((doc, filename, reprojected_strokes)) => {
                         self.viewport.set_document(doc);
                         self.viewport.update_node_transforms(&self.queue);
                         self.focus_camera_on_model();
-                        architecture::reducer::dispatch(
-                            self,
-                            architecture::message::Message::Ui(
-                                architecture::message::UiAction::FinishGltfLoadSuccess {
-                                    filename,
-                                },
-                            ),
-                        );
+                        self.emit_ui_action(ecs::events::UiActionEvent::FinishGltfLoadSuccess {
+                            filename,
+                        });
+                        self.process_ecs_step();
                         
                         // Assign background reprojected strokes back to layers
                         for (layer_idx, strokes) in reprojected_strokes.into_iter().enumerate() {
@@ -436,22 +747,18 @@ impl State {
                     }
                     Err(e) => {
                         log::error!("Failed to load glTF model: {}", e);
-                        architecture::reducer::dispatch(
-                            self,
-                            architecture::message::Message::Ui(
-                                architecture::message::UiAction::FinishGltfLoadError {
-                                    path,
-                                    message: e,
-                                },
-                            ),
-                        );
+                        self.emit_ui_action(ecs::events::UiActionEvent::FinishGltfLoadError {
+                            path,
+                            message: e,
+                        });
+                        self.process_ecs_step();
                     }
                 }
             }
         }
 
         // Spawn/destroy the UV viewer window based on show_uv_viewer flag
-        if self.app_state.ui().show_uv_viewer && self.uv_viewer.is_none() {
+        if self.app_state.ui().show_uv_viewer && self.uv_ui.viewer.is_none() {
             let window = Arc::new(event_loop.create_window(
                 Window::default_attributes()
                     .with_title("UV Viewer")
@@ -514,7 +821,7 @@ impl State {
                 layer_tex_ids.push(id);
             }
             
-            self.uv_viewer = Some(UvViewerWindow {
+            self.uv_ui.viewer = Some(UvViewerWindow {
                 window,
                 surface,
                 config,
@@ -524,17 +831,46 @@ impl State {
                 composite_tex_ids,
                 layer_tex_ids,
             });
+            self.ecs_runtime.set_uv_surface_size(size.width, size.height);
+            self.ecs_runtime.set_uv_ui_window_active(true);
+            self.ecs_runtime
+                .update_uv_ui_resource(Some(self.uv_ui.viewer.as_ref().unwrap().egui_ctx.clone()), true, true);
             log::info!("Opened floatable UV Viewer window.");
-        } else if !self.app_state.ui().show_uv_viewer && self.uv_viewer.is_some() {
-            self.uv_viewer = None;
+        } else if !self.app_state.ui().show_uv_viewer && self.uv_ui.viewer.is_some() {
+            self.uv_ui.viewer = None;
+            self.ecs_runtime.clear_uv_surface();
+            self.ecs_runtime.set_uv_ui_window_active(false);
+            self.ecs_runtime.update_uv_ui_resource(None, false, false);
             log::info!("Closed floatable UV Viewer window.");
         }
+
+        // Phase 5.1: Execute begin-frame lifecycle stage outside render paths.
+        if self.ecs_runtime.ui_frame_ops.begin_main_egui_frame {
+            let egui_input = self.main_ui.egui_state.take_egui_input(&*self.window);
+            self.main_ui.egui_ctx.begin_pass(egui_input);
+            self.main_ui.frame_begun = true;
+        }
+        if self.ecs_runtime.ui_frame_ops.begin_uv_egui_frame {
+            if let Some(ref mut viewer) = self.uv_ui.viewer {
+                let egui_input = viewer.egui_state.take_egui_input(&*viewer.window);
+                viewer.egui_ctx.begin_pass(egui_input);
+                self.uv_ui.frame_begun = true;
+            }
+        }
+
+        // Phase 4.2: Execute render operations generated by ECS systems.
+        self.ecs_runtime.sync_domain_state_from(&self.app_state);
+        self.execute_pending_render_ops()
     }
 
     #[allow(deprecated)]
     pub fn render(&mut self) -> Result<(), SurfaceError> {
-        let egui_input = self.egui_state.take_egui_input(&*self.window);
-        self.egui_ctx.begin_pass(egui_input);
+        if !self.main_ui.frame_begun {
+            // Fallback path keeps behavior stable while ECS UI lifecycle integration is staged.
+            let egui_input = self.main_ui.egui_state.take_egui_input(&*self.window);
+            self.main_ui.egui_ctx.begin_pass(egui_input);
+            self.main_ui.frame_begun = true;
+        }
 
         let mut close_error = false;
         let mut dismiss_error_requested = false;
@@ -544,7 +880,7 @@ impl State {
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-                .show(&self.egui_ctx, |ui| {
+                .show(&self.main_ui.egui_ctx, |ui| {
                     ui.vertical(|ui| {
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new("⚠️").size(24.0));
@@ -596,17 +932,17 @@ impl State {
         let mut gltf_to_load = None;
         let mut save_bindings_requested = false;
         let mut reset_bindings_requested = false;
-        let mut pending_ui_actions: Vec<architecture::message::UiAction> = Vec::new();
+        let mut pending_ui_actions: Vec<ecs::events::UiActionEvent> = Vec::new();
         if dismiss_error_requested {
-            pending_ui_actions.push(architecture::message::UiAction::DismissLoadError);
+            pending_ui_actions.push(ecs::events::UiActionEvent::DismissLoadError);
         }
-        let mut pending_tool_selection: Option<architecture::message::ToolKind> = None;
+        let mut pending_tool_selection: Option<ecs::events::ToolKind> = None;
         let mut pending_brush_size: Option<f32> = None;
         let mut pending_brush_hardness: Option<f32> = None;
         let mut pending_brush_opacity: Option<f32> = None;
         let mut pending_brush_color: Option<[u8; 4]> = None;
 
-        egui::Panel::top("top_menu").show(&self.egui_ctx, |ui| {
+        egui::Panel::top("top_menu").show(&self.main_ui.egui_ctx, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
                     if ui.button("Open glTF Model...").clicked() {
@@ -620,7 +956,7 @@ impl State {
                     }
                     ui.separator();
                     if ui.button("Clear Canvas").clicked() {
-                        pending_ui_actions.push(architecture::message::UiAction::ClearCanvas);
+                        pending_ui_actions.push(ecs::events::UiActionEvent::ClearCanvas);
                         ui.close();
                     }
                     if ui.button("Export Composed Texture (PNG)").clicked() {
@@ -637,21 +973,21 @@ impl State {
                     let undo_enabled = !self.app_state.history().undo_stack.is_empty();
                     let undo_label = if undo_enabled { "Undo (Ctrl+Z)" } else { "Undo" };
                     if ui.add_enabled(undo_enabled, egui::Button::new(undo_label)).clicked() {
-                        pending_ui_actions.push(architecture::message::UiAction::Undo);
+                        pending_ui_actions.push(ecs::events::UiActionEvent::Undo);
                         ui.close();
                     }
                     
                     let redo_enabled = !self.app_state.history().redo_stack.is_empty();
                     let redo_label = if redo_enabled { "Redo (Ctrl+Y)" } else { "Redo" };
                     if ui.add_enabled(redo_enabled, egui::Button::new(redo_label)).clicked() {
-                        pending_ui_actions.push(architecture::message::UiAction::Redo);
+                        pending_ui_actions.push(ecs::events::UiActionEvent::Redo);
                         ui.close();
                     }
                 });
 
                 ui.menu_button("Window", |ui| {
                     if ui.selectable_label(self.app_state.ui().show_uv_viewer, "UV Viewer").clicked() {
-                        pending_ui_actions.push(architecture::message::UiAction::SetUvViewerVisible(
+                        pending_ui_actions.push(ecs::events::UiActionEvent::SetUvViewerVisible(
                             !self.app_state.ui().show_uv_viewer,
                         ));
                         ui.close();
@@ -660,7 +996,7 @@ impl State {
 
                 ui.separator();
                 if ui.selectable_label(self.app_state.ui().show_uv_viewer, "🗺 View UVs").clicked() {
-                    pending_ui_actions.push(architecture::message::UiAction::SetUvViewerVisible(
+                    pending_ui_actions.push(ecs::events::UiActionEvent::SetUvViewerVisible(
                         !self.app_state.ui().show_uv_viewer,
                     ));
                 }
@@ -677,7 +1013,7 @@ impl State {
                         ui.selectable_value(&mut selected_mesh, "Plane".to_string(), "Plane");
                     });
                 if selected_mesh != current_mesh {
-                    pending_ui_actions.push(architecture::message::UiAction::SwitchMesh(selected_mesh));
+                    pending_ui_actions.push(ecs::events::UiActionEvent::SwitchMesh(selected_mesh));
                 }
 
                 if self.viewport.document.scenes.len() > 1 {
@@ -697,21 +1033,21 @@ impl State {
                             }
                         });
                     if selected_scene_idx != active_scene_idx {
-                        pending_ui_actions.push(architecture::message::UiAction::SetActiveScene(selected_scene_idx));
+                        pending_ui_actions.push(ecs::events::UiActionEvent::SetActiveScene(selected_scene_idx));
                         log::info!("Switched active scene to index {}", selected_scene_idx);
                     }
                 }
             });
         });
 
-        egui::Panel::bottom("asset_shelf").resizable(true).min_size(60.0).show(&self.egui_ctx, |ui| {
+        egui::Panel::bottom("asset_shelf").resizable(true).min_size(60.0).show(&self.main_ui.egui_ctx, |ui| {
             ui.heading("Asset Shelf");
             ui.horizontal(|ui| {
                 ui.label("Assets will appear here...");
             });
         });
 
-        egui::Panel::left("left_toolbar").resizable(false).show(&self.egui_ctx, |ui| {
+        egui::Panel::left("left_toolbar").resizable(false).show(&self.main_ui.egui_ctx, |ui| {
             ui.heading("Tools");
             ui.separator();
 
@@ -720,7 +1056,7 @@ impl State {
                 format!("{} Brush", egui_phosphor::regular::PAINT_BRUSH),
             );
             if brush_btn.clicked() {
-                pending_tool_selection = Some(architecture::message::ToolKind::Brush);
+                pending_tool_selection = Some(ecs::events::ToolKind::Brush);
             }
 
             let eraser_btn = ui.selectable_label(
@@ -728,16 +1064,16 @@ impl State {
                 format!("{} Eraser", egui_phosphor::regular::ERASER),
             );
             if eraser_btn.clicked() {
-                pending_tool_selection = Some(architecture::message::ToolKind::Eraser);
+                pending_tool_selection = Some(ecs::events::ToolKind::Eraser);
             }
 
             ui.separator();
             if ui.button("Clear All").clicked() {
-                pending_ui_actions.push(architecture::message::UiAction::ClearCanvas);
+                pending_ui_actions.push(ecs::events::UiActionEvent::ClearCanvas);
             }
         });
 
-        egui::Panel::right("right_panel").default_size(280.0).show(&self.egui_ctx, |ui| {
+        egui::Panel::right("right_panel").default_size(280.0).show(&self.main_ui.egui_ctx, |ui| {
             ui.heading("Settings");
             ui.separator();
 
@@ -810,7 +1146,7 @@ impl State {
                 .show(ui, |ui| {
                     let layer_name_id = egui::Id::new("add_layer_name_draft");
                     let mut layer_name_draft = self
-                        .egui_ctx
+                        .main_ui.egui_ctx
                         .data_mut(|d| d.get_persisted::<String>(layer_name_id).unwrap_or_default());
 
                     ui.horizontal(|ui| {
@@ -818,26 +1154,26 @@ impl State {
                         if ui.button("Add").clicked() {
                             let layer_name = layer_name_draft.trim().to_string();
                             if !layer_name.is_empty() {
-                                pending_ui_actions.push(architecture::message::UiAction::AddPaintLayer(layer_name));
+                                pending_ui_actions.push(ecs::events::UiActionEvent::AddPaintLayer(layer_name));
                                 layer_name_draft.clear();
                             }
                         }
                     });
 
-                    self.egui_ctx
+                    self.main_ui.egui_ctx
                         .data_mut(|d| d.insert_persisted(layer_name_id, layer_name_draft));
 
                     ui.horizontal(|ui| {
                         if ui.button("Add UV Grid Layer").clicked() {
-                            pending_ui_actions.push(architecture::message::UiAction::AddUvGridLayer);
+                            pending_ui_actions.push(ecs::events::UiActionEvent::AddUvGridLayer);
                         }
                         if ui.button("Add UV Checker Layer").clicked() {
-                            pending_ui_actions.push(architecture::message::UiAction::AddUvCheckerLayer);
+                            pending_ui_actions.push(ecs::events::UiActionEvent::AddUvCheckerLayer);
                         }
                     });
 
                     if ui.button("✨ Add Fill Layer").clicked() {
-                        pending_ui_actions.push(architecture::message::UiAction::AddFillLayer);
+                        pending_ui_actions.push(ecs::events::UiActionEvent::AddFillLayer);
                     }
 
                     ui.separator();
@@ -848,17 +1184,17 @@ impl State {
                         let is_active = self.painter.active_layer_idx == idx;
                         ui.horizontal(|ui| {
                             if ui.selectable_label(is_active, &self.painter.layers[idx].name).clicked() {
-                                pending_ui_actions.push(architecture::message::UiAction::SelectLayer(idx));
+                                pending_ui_actions.push(ecs::events::UiActionEvent::SelectLayer(idx));
                             }
 
                             let mut visible = self.painter.layers[idx].visible;
                             if ui.checkbox(&mut visible, "").changed() {
-                                pending_ui_actions.push(architecture::message::UiAction::SetLayerVisible { idx, visible });
+                                pending_ui_actions.push(ecs::events::UiActionEvent::SetLayerVisible { idx, visible });
                             }
 
                             if layer_count > 1 {
                                 if ui.button("🗑").clicked() {
-                                    pending_ui_actions.push(architecture::message::UiAction::DeleteLayer(idx));
+                                    pending_ui_actions.push(ecs::events::UiActionEvent::DeleteLayer(idx));
                                 }
                             }
                         });
@@ -873,13 +1209,13 @@ impl State {
                                         .selected_text(blend.to_str())
                                         .show_ui(ui, |ui| {
                                             if ui.selectable_value(&mut blend, BlendMode::Normal, "Normal").changed() {
-                                                pending_ui_actions.push(architecture::message::UiAction::SetLayerBlendMode { idx, mode: blend });
+                                                pending_ui_actions.push(ecs::events::UiActionEvent::SetLayerBlendMode { idx, mode: blend });
                                             }
                                             if ui.selectable_value(&mut blend, BlendMode::Multiply, "Multiply").changed() {
-                                                pending_ui_actions.push(architecture::message::UiAction::SetLayerBlendMode { idx, mode: blend });
+                                                pending_ui_actions.push(ecs::events::UiActionEvent::SetLayerBlendMode { idx, mode: blend });
                                             }
                                             if ui.selectable_value(&mut blend, BlendMode::Add, "Add").changed() {
-                                                pending_ui_actions.push(architecture::message::UiAction::SetLayerBlendMode { idx, mode: blend });
+                                                pending_ui_actions.push(ecs::events::UiActionEvent::SetLayerBlendMode { idx, mode: blend });
                                             }
                                         });
                                 });
@@ -889,7 +1225,7 @@ impl State {
                                     let mut op = self.painter.layers[idx].opacity;
                                     let response = ui.add(egui::Slider::new(&mut op, 0.0..=1.0));
                                     if response.changed() {
-                                        pending_ui_actions.push(architecture::message::UiAction::SetLayerOpacity {
+                                        pending_ui_actions.push(ecs::events::UiActionEvent::SetLayerOpacity {
                                             idx,
                                             opacity: op,
                                             begin_undo: response.drag_started(),
@@ -915,7 +1251,7 @@ impl State {
                                                 (c[0] * 255.0) as u8, (c[1] * 255.0) as u8,
                                                 (c[2] * 255.0) as u8, (c[3] * 255.0) as u8,
                                             ];
-                                            pending_ui_actions.push(architecture::message::UiAction::SetFillBaseColor {
+                                            pending_ui_actions.push(ecs::events::UiActionEvent::SetFillBaseColor {
                                                 idx,
                                                 color,
                                                 begin_undo: response.drag_started(),
@@ -937,7 +1273,7 @@ impl State {
                                                 (c[0] * 255.0) as u8, (c[1] * 255.0) as u8,
                                                 (c[2] * 255.0) as u8, (c[3] * 255.0) as u8,
                                             ];
-                                            pending_ui_actions.push(architecture::message::UiAction::SetFillNoiseColor {
+                                            pending_ui_actions.push(ecs::events::UiActionEvent::SetFillNoiseColor {
                                                 idx,
                                                 color,
                                                 begin_undo: response.drag_started(),
@@ -950,7 +1286,7 @@ impl State {
                                         let mut scale = self.painter.layers[idx].fill_noise_scale;
                                         let response = ui.add(egui::Slider::new(&mut scale, 0.5..=50.0));
                                         if response.changed() {
-                                            pending_ui_actions.push(architecture::message::UiAction::SetFillNoiseScale {
+                                            pending_ui_actions.push(ecs::events::UiActionEvent::SetFillNoiseScale {
                                                 idx,
                                                 scale,
                                                 begin_undo: response.drag_started(),
@@ -969,7 +1305,7 @@ impl State {
                                                 ui.selectable_value(&mut mode, 1u32, "Triplanar");
                                             });
                                         if mode != prev_mode {
-                                            pending_ui_actions.push(architecture::message::UiAction::SetFillProjectionMode { idx, mode });
+                                            pending_ui_actions.push(ecs::events::UiActionEvent::SetFillProjectionMode { idx, mode });
                                         }
                                     });
                                 }
@@ -1005,7 +1341,7 @@ impl State {
                             });
                     });
                     if seams_option != self.import_settings.seams_option {
-                        pending_ui_actions.push(architecture::message::UiAction::SetImportSeams(seams_option));
+                        pending_ui_actions.push(ecs::events::UiActionEvent::SetImportSeams(seams_option));
                     }
 
                     let mut margin_size = self.import_settings.margin_size;
@@ -1036,7 +1372,7 @@ impl State {
                             });
                     });
                     if margin_size != self.import_settings.margin_size {
-                        pending_ui_actions.push(architecture::message::UiAction::SetImportMargin(margin_size));
+                        pending_ui_actions.push(ecs::events::UiActionEvent::SetImportMargin(margin_size));
                     }
 
                     let mut island_orientation = self.import_settings.island_orientation;
@@ -1061,12 +1397,12 @@ impl State {
                             });
                     });
                     if island_orientation != self.import_settings.island_orientation {
-                        pending_ui_actions.push(architecture::message::UiAction::SetImportOrientation(island_orientation));
+                        pending_ui_actions.push(ecs::events::UiActionEvent::SetImportOrientation(island_orientation));
                     }
 
                     ui.add_space(4.0);
                     if ui.button("🔄 Recompute UVs & Reproject Strokes").clicked() {
-                        pending_ui_actions.push(architecture::message::UiAction::RecomputeUvsAndReproject);
+                        pending_ui_actions.push(ecs::events::UiActionEvent::RecomputeUvsAndReproject);
                     }
                 });
 
@@ -1184,19 +1520,19 @@ impl State {
                                 _ => "Other",
                             })
                             .show_ui(ui, |ui| {
-                                if self.supported_present_modes.contains(&wgpu::PresentMode::Fifo) {
+                                if self.render_host.supports_present_mode(wgpu::PresentMode::Fifo) {
                                     ui.selectable_value(&mut present_mode, wgpu::PresentMode::Fifo, "VSync On (Fifo)");
                                 }
-                                if self.supported_present_modes.contains(&wgpu::PresentMode::Immediate) {
+                                if self.render_host.supports_present_mode(wgpu::PresentMode::Immediate) {
                                     ui.selectable_value(&mut present_mode, wgpu::PresentMode::Immediate, "VSync Off (Immediate)");
                                 }
-                                if self.supported_present_modes.contains(&wgpu::PresentMode::Mailbox) {
+                                if self.render_host.supports_present_mode(wgpu::PresentMode::Mailbox) {
                                     ui.selectable_value(&mut present_mode, wgpu::PresentMode::Mailbox, "VSync Off (Mailbox)");
                                 }
-                                if self.supported_present_modes.contains(&wgpu::PresentMode::AutoVsync) {
+                                if self.render_host.supports_present_mode(wgpu::PresentMode::AutoVsync) {
                                     ui.selectable_value(&mut present_mode, wgpu::PresentMode::AutoVsync, "Auto VSync");
                                 }
-                                if self.supported_present_modes.contains(&wgpu::PresentMode::AutoNoVsync) {
+                                if self.render_host.supports_present_mode(wgpu::PresentMode::AutoNoVsync) {
                                     ui.selectable_value(&mut present_mode, wgpu::PresentMode::AutoNoVsync, "Auto VSync Off");
                                 }
                             });
@@ -1296,34 +1632,19 @@ impl State {
         });
 
         if let Some(tool) = pending_tool_selection {
-            architecture::reducer::dispatch(
-                self,
-                architecture::message::Message::Ui(architecture::message::UiAction::SelectTool(tool)),
-            );
+            self.emit_ui_action(ecs::events::UiActionEvent::SelectTool(tool));
         }
         if let Some(size) = pending_brush_size {
-            architecture::reducer::dispatch(
-                self,
-                architecture::message::Message::Ui(architecture::message::UiAction::SetBrushSize(size)),
-            );
+            self.emit_ui_action(ecs::events::UiActionEvent::SetBrushSize(size));
         }
         if let Some(hardness) = pending_brush_hardness {
-            architecture::reducer::dispatch(
-                self,
-                architecture::message::Message::Ui(architecture::message::UiAction::SetBrushHardness(hardness)),
-            );
+            self.emit_ui_action(ecs::events::UiActionEvent::SetBrushHardness(hardness));
         }
         if let Some(opacity) = pending_brush_opacity {
-            architecture::reducer::dispatch(
-                self,
-                architecture::message::Message::Ui(architecture::message::UiAction::SetBrushOpacity(opacity)),
-            );
+            self.emit_ui_action(ecs::events::UiActionEvent::SetBrushOpacity(opacity));
         }
         if let Some(color) = pending_brush_color {
-            architecture::reducer::dispatch(
-                self,
-                architecture::message::Message::Ui(architecture::message::UiAction::SetBrushColor(color)),
-            );
+            self.emit_ui_action(ecs::events::UiActionEvent::SetBrushColor(color));
         }
         if reset_bindings_requested {
             self.preferences.bindings = user_preferences::InputBindings::default();
@@ -1334,7 +1655,7 @@ impl State {
 
         if self.app_state.ui().show_pressure_calibration {
             let mut is_open = self.app_state.ui().show_pressure_calibration;
-            let egui_ctx = self.egui_ctx.clone();
+            let egui_ctx = self.main_ui.egui_ctx.clone();
             egui::Window::new("Pressure Calibration")
                 .collapsible(false)
                 .resizable(false)
@@ -1366,7 +1687,7 @@ impl State {
                     if min_start != self.preferences.pressure_curve_min_start
                         || max_at != self.preferences.pressure_curve_max_at
                     {
-                        pending_ui_actions.push(architecture::message::UiAction::SetPressureCurve {
+                        pending_ui_actions.push(ecs::events::UiActionEvent::SetPressureCurve {
                             min_start,
                             max_at,
                         });
@@ -1414,8 +1735,9 @@ impl State {
         }
 
         for action in pending_ui_actions {
-            architecture::reducer::dispatch(self, architecture::message::Message::Ui(action));
+            self.emit_ui_action(action);
         }
+        self.process_ecs_step();
 
         if export_requested {
             self.export_composite_texture();
@@ -1426,7 +1748,7 @@ impl State {
         }
 
         if self.app_state.resources().is_loading_gltf {
-            let status_msg = self.gltf_loading_status.as_ref()
+            let status_msg = self.asset_loader.gltf_loading_status.as_ref()
                 .and_then(|status| status.lock().ok())
                 .map(|g| g.clone())
                 .unwrap_or_else(|| "Reading and compiling model resources in the background".to_string());
@@ -1437,11 +1759,11 @@ impl State {
                 .resizable(false)
                 .movable(false)
                 .title_bar(false)
-                .frame(egui::Frame::window(&self.egui_ctx.global_style())
+                .frame(egui::Frame::window(&self.main_ui.egui_ctx.global_style())
                     .fill(egui::Color32::from_black_alpha(200))
                     .inner_margin(25.0)
                     .corner_radius(12.0))
-                .show(&self.egui_ctx, |ui| {
+                .show(&self.main_ui.egui_ctx, |ui| {
                     ui.vertical_centered(|ui| {
                         ui.add(egui::Spinner::new().size(50.0));
                         ui.add_space(15.0);
@@ -1459,11 +1781,11 @@ impl State {
 
 
 
-        let egui_output = self.egui_ctx.end_pass();
-        let paint_jobs = self.egui_ctx.tessellate(egui_output.shapes, egui_output.pixels_per_point);
+        let egui_output = self.main_ui.egui_ctx.end_pass();
+        let paint_jobs = self.main_ui.egui_ctx.tessellate(egui_output.shapes, egui_output.pixels_per_point);
 
         for (id, image_delta) in &egui_output.textures_delta.set {
-            self.egui_renderer.update_texture(&self.device, &self.queue, *id, image_delta);
+            self.main_ui.egui_renderer.update_texture(&self.device, &self.queue, *id, image_delta);
         }
 
         let screen_descriptor = egui_wgpu::ScreenDescriptor {
@@ -1486,15 +1808,13 @@ impl State {
             label: Some("Main Render Encoder"),
         });
 
-        self.egui_renderer.update_buffers(
+        self.main_ui.egui_renderer.update_buffers(
             &self.device,
             &self.queue,
             &mut encoder,
             &paint_jobs,
             &screen_descriptor,
         );
-
-        self.viewport.update_camera(&self.queue);
 
         self.viewport.render(
             &mut encoder,
@@ -1521,7 +1841,7 @@ impl State {
                 multiview_mask: None,
             }).forget_lifetime();
 
-            self.egui_renderer.render(
+            self.main_ui.egui_renderer.render(
                 &mut egui_pass,
                 &paint_jobs,
                 &screen_descriptor,
@@ -1532,22 +1852,31 @@ impl State {
         surface_texture.present();
 
         for id in &egui_output.textures_delta.free {
-            self.egui_renderer.free_texture(id);
+            self.main_ui.egui_renderer.free_texture(id);
         }
+
+        self.ecs_runtime.ui_frame_ops.begin_main_egui_frame = false;
+        self.ecs_runtime.ui_frame_ops.draw_main_egui_panels = false;
+        self.ecs_runtime.ui_frame_ops.end_main_egui_frame_and_upload = false;
+        self.main_ui.frame_begun = false;
 
         Ok(())
     }
 
     pub fn render_uv_viewer(&mut self) -> Result<(), SurfaceError> {
-        let mut pending_ui_actions: Vec<architecture::message::UiAction> = Vec::new();
+        let mut pending_ui_actions: Vec<ecs::events::UiActionEvent> = Vec::new();
         {
-            let viewer = match &mut self.uv_viewer {
+            let viewer = match &mut self.uv_ui.viewer {
                 Some(v) => v,
                 None => return Ok(()),
             };
 
-            let egui_input = viewer.egui_state.take_egui_input(&*viewer.window);
-            viewer.egui_ctx.begin_pass(egui_input);
+            if !self.uv_ui.frame_begun {
+                // Fallback path keeps behavior stable while ECS UI lifecycle integration is staged.
+                let egui_input = viewer.egui_state.take_egui_input(&*viewer.window);
+                viewer.egui_ctx.begin_pass(egui_input);
+                self.uv_ui.frame_begun = true;
+            }
 
             let num_tiles = self.viewport.document.num_udim_tiles.max(1) as usize;
             let show_uv_wireframe = self.app_state.ui().show_uv_wireframe;
@@ -1584,7 +1913,7 @@ impl State {
                         }
                     });
                 if selected_source != current_source {
-                    pending_ui_actions.push(architecture::message::UiAction::SetUvViewerSource(
+                    pending_ui_actions.push(ecs::events::UiActionEvent::SetUvViewerSource(
                         selected_source,
                     ));
                 }
@@ -1592,7 +1921,7 @@ impl State {
                 ui.add_space(15.0);
                 let mut wireframe = self.app_state.ui().show_uv_wireframe;
                 if ui.checkbox(&mut wireframe, "Show UV Wireframe").changed() {
-                    pending_ui_actions.push(architecture::message::UiAction::SetUvWireframe(wireframe));
+                    pending_ui_actions.push(ecs::events::UiActionEvent::SetUvWireframe(wireframe));
                 }
                     
                 ui.add_space(20.0);
@@ -1602,7 +1931,7 @@ impl State {
                     .add(egui::Slider::new(&mut uv_size, 64.0..=512.0).suffix("px"))
                     .changed()
                 {
-                    pending_ui_actions.push(architecture::message::UiAction::SetUvViewerSize(uv_size));
+                    pending_ui_actions.push(ecs::events::UiActionEvent::SetUvViewerSize(uv_size));
                 }
             });
             
@@ -1763,34 +2092,122 @@ impl State {
         }
 
         for action in pending_ui_actions {
-            architecture::reducer::dispatch(self, architecture::message::Message::Ui(action));
+            self.emit_ui_action(action);
         }
+        self.process_ecs_step();
+
+        self.ecs_runtime.ui_frame_ops.begin_uv_egui_frame = false;
+        self.ecs_runtime.ui_frame_ops.draw_uv_egui_panels = false;
+        self.ecs_runtime.ui_frame_ops.end_uv_egui_frame_and_upload = false;
+        self.uv_ui.frame_begun = false;
         
         Ok(())
     }
 
     pub fn resize_uv_viewer(&mut self, width: u32, height: u32) {
-        if let Some(ref mut viewer) = self.uv_viewer {
-            if width > 0 && height > 0 {
-                viewer.config.width = width;
-                viewer.config.height = height;
-                viewer.surface.configure(&self.device, &viewer.config);
+        self.surface_host.resize_uv_surface(
+            width,
+            height,
+            &mut self.uv_ui.viewer,
+            &self.device,
+            &mut self.ecs_runtime,
+        );
+    }
+
+    pub fn queue_main_window_resize(&mut self, width: u32, height: u32) {
+        self.surface_host
+            .queue_main_window_resize(&mut self.ecs_runtime, width, height);
+    }
+
+    pub fn queue_uv_window_resize(&mut self, width: u32, height: u32) {
+        self.surface_host
+            .queue_uv_window_resize(&mut self.ecs_runtime, width, height);
+    }
+
+    pub fn queue_main_redraw(&mut self) {
+        self.render_scheduler.queue_main_redraw(&mut self.ecs_runtime);
+    }
+
+    pub fn queue_uv_redraw(&mut self) {
+        self.render_scheduler.queue_uv_redraw(&mut self.ecs_runtime);
+    }
+
+    pub fn execute_pending_render_ops(&mut self) -> Result<(), SurfaceError> {
+        let render_ops = self.ecs_runtime.take_pending_render_ops();
+        let should_render_main = self
+            .render_scheduler
+            .should_render_main_surface(&render_ops);
+
+        if should_render_main {
+            if let Err(err) = self.render() {
+                self.render_host.handle_render_error(
+                    &mut self.ecs_runtime,
+                    ecs::events::RenderSurfaceKind::Main,
+                    err,
+                )?;
             }
         }
+        if self.render_scheduler.should_render_uv_surface(&render_ops) {
+            if let Err(err) = self.render_uv_viewer() {
+                self.render_host.handle_render_error(
+                    &mut self.ecs_runtime,
+                    ecs::events::RenderSurfaceKind::Uv,
+                    err,
+                )?;
+            }
+        }
+        Ok(())
     }
 
     pub fn set_uv_viewer_visible(&mut self, visible: bool) {
-        architecture::reducer::dispatch(
-            self,
-            architecture::message::Message::Ui(architecture::message::UiAction::SetUvViewerVisible(visible)),
-        );
+        self.emit_ui_action(ecs::events::UiActionEvent::SetUvViewerVisible(visible));
+        self.process_ecs_step();
+    }
+
+    fn apply_pending_domain_host_ops(&mut self) {
+        let pending = self.ecs_runtime.take_pending_domain_host_ops();
+        for command in pending.input_state_commands {
+            ecs::domain::apply_input_state_event(self, &command);
+        }
+        for command in pending.viewport_commands {
+            ecs::domain::apply_viewport_event(self, &command);
+        }
+        for command in pending.tool_commands {
+            let mut tool_system = {
+                if let Some(mut runtime_tools) = self
+                    .ecs_runtime
+                    .world_mut()
+                    .get_resource_mut::<crate::app::ecs::ToolRuntimeResource>()
+                {
+                    std::mem::take(&mut runtime_tools.0)
+                } else {
+                    crate::app::tools::ToolSystem::default()
+                }
+            };
+
+            ecs::domain::apply_tool_event(self, &command, &mut tool_system);
+
+            if let Some(mut runtime_tools) = self
+                .ecs_runtime
+                .world_mut()
+                .get_resource_mut::<crate::app::ecs::ToolRuntimeResource>()
+            {
+                runtime_tools.0 = tool_system;
+            }
+        }
+        for command in pending.document_commands {
+            ecs::domain::apply_document_event(self, &command);
+        }
+        for action in pending.ui_actions {
+            ecs::domain::apply_ui_event(self, &action);
+        }
     }
 
     pub fn push_undo_state(&mut self) {
         // Clear redo stack when a new action is performed
         self.app_state.history_mut().redo_stack.clear();
         
-        let undo_state = architecture::state::UndoState {
+        let undo_state = app_state::UndoState {
             layers: self.painter.layers.clone(),
             active_layer_idx: self.painter.active_layer_idx,
         };
@@ -1803,7 +2220,7 @@ impl State {
 
     pub fn undo(&mut self) {
         if let Some(prev_state) = self.app_state.history_mut().undo_stack.pop() {
-            let current_state = architecture::state::UndoState {
+            let current_state = app_state::UndoState {
                 layers: self.painter.layers.clone(),
                 active_layer_idx: self.painter.active_layer_idx,
             };
@@ -1821,7 +2238,7 @@ impl State {
 
     pub fn redo(&mut self) {
         if let Some(next_state) = self.app_state.history_mut().redo_stack.pop() {
-            let current_state = architecture::state::UndoState {
+            let current_state = app_state::UndoState {
                 layers: self.painter.layers.clone(),
                 active_layer_idx: self.painter.active_layer_idx,
             };
@@ -1879,5 +2296,51 @@ pub struct UvViewerWindow {
     pub egui_renderer: egui_wgpu::Renderer,
     pub composite_tex_ids: Vec<egui::TextureId>,
     pub layer_tex_ids: Vec<egui::TextureId>,
+}
+
+#[cfg(all(test, not(target_os = "macos")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_domain_flush_applies_ui_action_event() {
+        let event_loop = match winit::event_loop::EventLoop::new() {
+            Ok(loop_handle) => loop_handle,
+            Err(_) => {
+                eprintln!("Skipping test_domain_flush_applies_ui_action_event: no event loop");
+                return;
+            }
+        };
+
+        #[allow(deprecated)]
+        let window = match event_loop.create_window(
+            Window::default_attributes()
+                .with_visible(false)
+                .with_inner_size(winit::dpi::LogicalSize::new(320.0, 240.0)),
+        ) {
+            Ok(window) => Arc::new(window),
+            Err(_) => {
+                eprintln!("Skipping test_domain_flush_applies_ui_action_event: no window backend");
+                return;
+            }
+        };
+
+        let mut state = match pollster::block_on(State::new(window)) {
+            Ok(state) => state,
+            Err(_) => {
+                eprintln!("Skipping test_domain_flush_applies_ui_action_event: state init failed");
+                return;
+            }
+        };
+
+        state
+            .ecs_runtime
+            .send_event(ecs::events::AppEvent::Ui(ecs::events::UiActionEvent::SetBrushSize(
+                111.0,
+            )));
+        state.process_ecs_step();
+
+        assert_eq!(state.app_state.canvas().brush_size, 111.0);
+    }
 }
 
