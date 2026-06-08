@@ -18,7 +18,7 @@ ollama pull nomic-embed-text
 
 # build local large context model
 ollama create qwen3.5-65k -f Dockerfile-qwen3.5-65k
-
+ollama create gemma4-agent -f Dockerfile-gemma4-agent
 
 # setup models for continue
 
