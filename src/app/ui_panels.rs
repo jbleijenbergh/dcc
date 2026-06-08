@@ -913,7 +913,6 @@ impl State {
         for action in pending_ui_actions {
             self.emit_ui_action(action);
         }
-        self.process_ecs_step();
 
         if export_requested {
             self.export_composite_texture();
@@ -1184,7 +1183,6 @@ impl State {
         for action in pending_ui_actions {
             self.emit_ui_action(action);
         }
-        self.process_ecs_step();
 
         Some(res)
     }

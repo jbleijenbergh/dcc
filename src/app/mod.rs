@@ -183,34 +183,36 @@ impl State {
         &mut self,
         event_loop: &winit::event_loop::ActiveEventLoop,
     ) -> Result<(), SurfaceError> {
-        // Phase 1: ECS schedule tick + host adapter consumption.
-        self.process_ecs_step();
+        // Set the active State pointer in the ECS world before ticking.
+        // This allows ECS systems to directly access host methods (drawing, rendering, WGPU context) unsafely but correctly.
+        let ptr = self as *mut State;
+        self.ecs_runtime
+            .world_mut()
+            .insert_resource(ecs::HostStatePtr(ptr));
 
-        // Phase 4.1: Apply pending ECS-driven surface operations.
-        let surface_ops = self.ecs_runtime.take_pending_surface_ops();
-        self.surface_host.apply_pending_surface_ops(
-            surface_ops,
-            &mut self.size,
-            &mut self.config,
-            &self.surface,
-            &self.device,
-            &mut self.depth_texture,
-            &mut self.depth_view,
-            &mut self.viewport,
-            &mut self.uv_ui.viewer,
-            &mut self.ecs_runtime,
-        );
+        // 1. Synchronize host app state to ECS domain resource before tick.
+        self.ecs_runtime.sync_domain_state_from(&self.app_state);
 
-        // Phase 5.1: Consume ECS-owned UI lifecycle operations.
-        // Rendering code remains in host methods for now; this validates ECS stage orchestration.
-        self.ecs_runtime.ui_frame_ops = self.ecs_runtime.take_pending_ui_frame_ops();
+        // 2. Tick the Bevy ECS schedule.
+        // Resizing, GPU preparation, Egui frame starting, and WGPU rendering are run natively inside systems.
+        self.ecs_runtime.tick();
 
-        // Phase 4.2: Apply pending prepare-stage GPU ops from ECS.
-        let prepare_ops = self.ecs_runtime.take_pending_prepare_ops();
-        if prepare_ops.update_main_camera_uniform {
-            self.viewport.update_camera(&self.queue);
+        // 3. Consume pending host-side domain mutations produced by ECS systems.
+        self.apply_pending_domain_host_ops();
+
+        // 4. Tick asset loading and child window lifecycles on the host.
+        self.tick_asset_loader();
+        self.tick_window_lifecycle(event_loop);
+
+        // 5. Propagate any rendering errors encountered during ECS system runs.
+        if let Some(err) = self.ecs_runtime.take_render_error() {
+            return Err(err);
         }
 
+        Ok(())
+    }
+
+    fn tick_asset_loader(&mut self) {
         if let Some(ref rx) = self.asset_loader.gltf_rx {
             if let Ok(res) = rx.try_recv() {
                 self.asset_loader.gltf_rx = None;
@@ -255,7 +257,9 @@ impl State {
                 }
             }
         }
+    }
 
+    fn tick_window_lifecycle(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         // Spawn/destroy the UV viewer window based on show_uv_viewer flag
         if self.app_state.ui().show_uv_viewer && self.uv_ui.viewer.is_none() {
             let window = Arc::new(
@@ -363,24 +367,8 @@ impl State {
             self.ecs_runtime.update_uv_ui_resource(None, false, false);
             log::info!("Closed floatable UV Viewer window.");
         }
-
-        // Phase 5.1: Execute begin-frame lifecycle stage outside render paths.
-        if self.ecs_runtime.ui_frame_ops.begin_main_egui_frame {
-            let egui_input = self.main_ui.egui_state.take_egui_input(&*self.window);
-            self.main_ui.egui_ctx.begin_pass(egui_input);
-            self.main_ui.frame_begun = true;
-        }
-        if self.ecs_runtime.ui_frame_ops.begin_uv_egui_frame {
-            if let Some(ref mut viewer) = self.uv_ui.viewer {
-                let egui_input = viewer.egui_state.take_egui_input(&*viewer.window);
-                viewer.egui_ctx.begin_pass(egui_input);
-                self.uv_ui.frame_begun = true;
-            }
-        }
-
-        self.ecs_runtime.sync_domain_state_from(&self.app_state);
-        self.execute_pending_render_ops()
     }
+
 
     pub(crate) fn commit_current_stroke(&mut self) {
         if let Some(stroke) = self.interaction.stroke_in_progress.take() {

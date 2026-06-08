@@ -250,6 +250,15 @@ pub struct GpuContextResource {
     pub queue: wgpu::Queue,
 }
 
+#[derive(Resource, Copy, Clone)]
+pub struct HostStatePtr(pub *mut crate::app::State);
+
+unsafe impl Send for HostStatePtr {}
+unsafe impl Sync for HostStatePtr {}
+
+#[derive(Resource, Default)]
+pub struct RenderErrorResource(pub Option<crate::app::SurfaceError>);
+
 /// Phase 4.1: Surface registry tracked by ECS.
 #[derive(Resource, Clone, Copy, Debug)]
 pub struct SurfaceRegistryResource {
@@ -427,6 +436,8 @@ impl EcsRuntime {
         world.init_resource::<UiWindowRegistryResource>();
         world.init_resource::<PendingUiFrameOpsResource>();
         world.init_resource::<ToolRuntimeResource>();
+        world.insert_resource(HostStatePtr(std::ptr::null_mut()));
+        world.init_resource::<RenderErrorResource>();
 
         // Phase 3: Initialize ordered schedules for deterministic frame flow.
         // The main schedule will execute each phase in order.
@@ -688,6 +699,15 @@ impl EcsRuntime {
     pub fn schedule_mut(&mut self) -> &mut Schedule {
         &mut self.schedule
     }
+
+    /// Retrieve and clear any render error encountered during schedule run.
+    pub fn take_render_error(&mut self) -> Option<crate::app::SurfaceError> {
+        if let Some(mut err_res) = self.world.get_resource_mut::<RenderErrorResource>() {
+            err_res.0.take()
+        } else {
+            None
+        }
+    }
 }
 
 impl Default for EcsRuntime {
@@ -701,8 +721,8 @@ pub mod systems {
     use super::events::*;
     use super::{
         DomainStateResource, ExtractedCameraData, ExtractedDocumentData, ExtractedLayerComposition,
-        MainWindowUiResource, PendingDomainHostOpsResource, PendingPrepareOpsResource,
-        PendingRenderOpsResource, PendingSurfaceOpsResource, PendingUiFrameOpsResource,
+        HostStatePtr, MainWindowUiResource, PendingDomainHostOpsResource, PendingPrepareOpsResource,
+        PendingRenderOpsResource, PendingSurfaceOpsResource, PendingUiFrameOpsResource, RenderErrorResource,
         SurfaceRegistryResource, UiWindowRegistryResource, UvWindowUiResource,
     };
     use bevy_ecs::system::{Res, ResMut};
@@ -746,7 +766,7 @@ pub mod systems {
         }
     }
 
-    /// Phase 4.2: Prepare GPU-stage work before render passes.
+    /// Phase 4.2: Prepare GPU-stage work before render passes (sets flags).
     pub fn prepare_gpu_system(
         mut events: bevy_ecs::event::EventReader<RenderRequestEvent>,
         mut pending_prepare_ops: ResMut<PendingPrepareOpsResource>,
@@ -756,6 +776,47 @@ pub mod systems {
                 pending_prepare_ops.update_main_camera_uniform = true;
             }
         }
+    }
+
+    /// Apply GPU prepare changes on host state.
+    pub fn apply_prepare_gpu_system(
+        state_ptr: Res<HostStatePtr>,
+        mut pending_prepare_ops: ResMut<PendingPrepareOpsResource>,
+    ) {
+        if state_ptr.0.is_null() {
+            return;
+        }
+        let state = unsafe { &mut *state_ptr.0 };
+
+        let ops = std::mem::take(&mut *pending_prepare_ops);
+        if ops.update_main_camera_uniform {
+            state.viewport.update_camera(&state.queue);
+        }
+    }
+
+    /// Apply pending surface operations directly on the host state.
+    pub fn apply_surface_ops_system(
+        state_ptr: Res<HostStatePtr>,
+        mut pending_ops: ResMut<PendingSurfaceOpsResource>,
+    ) {
+        if state_ptr.0.is_null() {
+            return;
+        }
+        let state = unsafe { &mut *state_ptr.0 };
+        let ops = std::mem::take(&mut *pending_ops);
+
+        state.surface_host.apply_pending_surface_ops(
+            ops,
+            &mut state.size,
+            &mut state.config,
+            &state.surface,
+            &state.device,
+            &mut state.depth_texture,
+            &mut state.depth_view,
+            &mut state.viewport,
+            &mut state.uv_ui.viewer,
+            &mut state.ecs_runtime,
+        );
     }
 
     /// Phase 4.2: Render 3D viewport request system.
@@ -819,7 +880,7 @@ pub mod systems {
         }
     }
 
-    /// Phase 5.1: Begin egui frame lifecycle stage.
+    /// Phase 5.1: Begin egui frame lifecycle stage (sets flags).
     pub fn begin_egui_frame_system(
         mut events: bevy_ecs::event::EventReader<RenderRequestEvent>,
         ui_windows: Res<UiWindowRegistryResource>,
@@ -850,7 +911,33 @@ pub mod systems {
         }
     }
 
-    /// Phase 5.1: Draw egui panels lifecycle stage.
+    /// Apply egui begin frame natively on host state.
+    pub fn apply_begin_egui_frame_system(
+        state_ptr: Res<HostStatePtr>,
+        mut pending_ui_ops: ResMut<PendingUiFrameOpsResource>,
+    ) {
+        if state_ptr.0.is_null() {
+            return;
+        }
+        let state = unsafe { &mut *state_ptr.0 };
+
+        if pending_ui_ops.begin_main_egui_frame {
+            pending_ui_ops.begin_main_egui_frame = false;
+            let egui_input = state.main_ui.egui_state.take_egui_input(&*state.window);
+            state.main_ui.egui_ctx.begin_pass(egui_input);
+            state.main_ui.frame_begun = true;
+        }
+        if pending_ui_ops.begin_uv_egui_frame {
+            pending_ui_ops.begin_uv_egui_frame = false;
+            if let Some(ref mut viewer) = state.uv_ui.viewer {
+                let egui_input = viewer.egui_state.take_egui_input(&*viewer.window);
+                viewer.egui_ctx.begin_pass(egui_input);
+                state.uv_ui.frame_begun = true;
+            }
+        }
+    }
+
+    /// Phase 5.1: Draw egui panels lifecycle stage (sets flags).
     pub fn draw_egui_panels_system(
         mut events: bevy_ecs::event::EventReader<RenderRequestEvent>,
         ui_windows: Res<UiWindowRegistryResource>,
@@ -881,7 +968,7 @@ pub mod systems {
         }
     }
 
-    /// Phase 5.1: End egui frame + upload lifecycle stage.
+    /// Phase 5.1: End egui frame + upload lifecycle stage (sets flags).
     pub fn end_egui_frame_and_upload_system(
         mut events: bevy_ecs::event::EventReader<RenderRequestEvent>,
         ui_windows: Res<UiWindowRegistryResource>,
@@ -906,6 +993,105 @@ pub mod systems {
                 RenderRequestEvent::UvSurface => {
                     if ui_windows.uv_window_ui_active && uv_ready {
                         pending_ui_ops.end_uv_egui_frame_and_upload = true;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Native ECS rendering system for the main display surface.
+    pub fn ecs_render_main_system(
+        state_ptr: Res<HostStatePtr>,
+        mut events: bevy_ecs::event::EventReader<RenderRequestEvent>,
+        mut pending_ops: ResMut<PendingRenderOpsResource>,
+        mut err_res: ResMut<RenderErrorResource>,
+        mut failures: bevy_ecs::event::EventWriter<RenderFailureEvent>,
+    ) {
+        if state_ptr.0.is_null() {
+            return;
+        }
+        let state = unsafe { &mut *state_ptr.0 };
+
+        let mut should_render = false;
+        for event in events.read() {
+            if matches!(event, RenderRequestEvent::MainSurface) {
+                should_render = true;
+            }
+        }
+
+        let render_scheduler = &state.render_scheduler;
+        if should_render || render_scheduler.should_render_main_surface(&pending_ops) {
+            pending_ops.render_main_surface = false;
+            pending_ops.render_3d_viewport_pass = false;
+            pending_ops.render_paint_composite_pass = false;
+
+            let (textures_delta, paint_jobs) = state.draw_main_ui();
+            if let Err(err) = state.render_main_surface(textures_delta, paint_jobs) {
+                match err {
+                    crate::app::SurfaceError::Lost => {
+                        failures.send(RenderFailureEvent {
+                            surface: RenderSurfaceKind::Main,
+                            kind: RenderFailureKind::Lost,
+                        });
+                    }
+                    crate::app::SurfaceError::Outdated => {
+                        failures.send(RenderFailureEvent {
+                            surface: RenderSurfaceKind::Main,
+                            kind: RenderFailureKind::Outdated,
+                        });
+                    }
+                    crate::app::SurfaceError::Timeout => {}
+                    crate::app::SurfaceError::Other(_) => {
+                        err_res.0 = Some(err);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Native ECS rendering system for the floatable UV viewer surface.
+    pub fn ecs_render_uv_system(
+        state_ptr: Res<HostStatePtr>,
+        mut events: bevy_ecs::event::EventReader<RenderRequestEvent>,
+        mut pending_ops: ResMut<PendingRenderOpsResource>,
+        mut err_res: ResMut<RenderErrorResource>,
+        mut failures: bevy_ecs::event::EventWriter<RenderFailureEvent>,
+    ) {
+        if state_ptr.0.is_null() {
+            return;
+        }
+        let state = unsafe { &mut *state_ptr.0 };
+
+        let mut should_render = false;
+        for event in events.read() {
+            if matches!(event, RenderRequestEvent::UvSurface) {
+                should_render = true;
+            }
+        }
+
+        let render_scheduler = &state.render_scheduler;
+        if should_render || render_scheduler.should_render_uv_surface(&pending_ops) {
+            pending_ops.render_uv_surface = false;
+
+            if let Some((textures_delta, paint_jobs)) = state.draw_uv_ui() {
+                if let Err(err) = state.render_uv_surface(textures_delta, paint_jobs) {
+                    match err {
+                        crate::app::SurfaceError::Lost => {
+                            failures.send(RenderFailureEvent {
+                                surface: RenderSurfaceKind::Uv,
+                                kind: RenderFailureKind::Lost,
+                            });
+                        }
+                        crate::app::SurfaceError::Outdated => {
+                            failures.send(RenderFailureEvent {
+                                surface: RenderSurfaceKind::Uv,
+                                kind: RenderFailureKind::Outdated,
+                            });
+                        }
+                        crate::app::SurfaceError::Timeout => {}
+                        crate::app::SurfaceError::Other(_) => {
+                            err_res.0 = Some(err);
+                        }
                     }
                 }
             }

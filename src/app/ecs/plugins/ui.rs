@@ -7,9 +7,12 @@ pub fn register(schedule: &mut Schedule) {
     schedule.add_systems(
         (
             systems::begin_egui_frame_system,
+            systems::apply_begin_egui_frame_system,
             systems::draw_egui_panels_system,
         )
+            .chain()
             .in_set(FramePhase::RenderMainSurface),
     );
     schedule.add_systems(systems::end_egui_frame_and_upload_system.in_set(FramePhase::EndFrame));
 }
+

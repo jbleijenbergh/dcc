@@ -158,7 +158,6 @@ impl State {
         let (tx, rx) = std::sync::mpsc::channel();
         self.asset_loader.gltf_rx = Some(rx);
         self.emit_ui_action(crate::app::ecs::events::UiActionEvent::StartGltfLoad);
-        self.process_ecs_step();
         self.asset_loader.loading_path = Some(path.to_path_buf());
 
         // Extract strokes from non-fill layers to clone and reproject in background

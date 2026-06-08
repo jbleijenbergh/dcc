@@ -402,35 +402,7 @@ impl State {
         self.render_scheduler.queue_uv_redraw(&mut self.ecs_runtime);
     }
 
-    pub fn execute_pending_render_ops(&mut self) -> Result<(), SurfaceError> {
-        let render_ops = self.ecs_runtime.take_pending_render_ops();
-        let should_render_main = self
-            .render_scheduler
-            .should_render_main_surface(&render_ops);
 
-        if should_render_main {
-            let (textures_delta, paint_jobs) = self.draw_main_ui();
-            if let Err(err) = self.render_main_surface(textures_delta, paint_jobs) {
-                self.render_host.handle_render_error(
-                    &mut self.ecs_runtime,
-                    ecs::events::RenderSurfaceKind::Main,
-                    err,
-                )?;
-            }
-        }
-        if self.render_scheduler.should_render_uv_surface(&render_ops) {
-            if let Some((textures_delta, paint_jobs)) = self.draw_uv_ui() {
-                if let Err(err) = self.render_uv_surface(textures_delta, paint_jobs) {
-                    self.render_host.handle_render_error(
-                        &mut self.ecs_runtime,
-                        ecs::events::RenderSurfaceKind::Uv,
-                        err,
-                    )?;
-                }
-            }
-        }
-        Ok(())
-    }
 }
 
 pub struct UvViewerWindow {
