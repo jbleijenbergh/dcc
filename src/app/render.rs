@@ -17,17 +17,18 @@ impl State {
             pixels_per_point: self.window.scale_factor() as f32,
         };
 
-        let main_ctx = self.ecs_runtime.world().get_resource::<ecs::MainRenderContextResource>().unwrap();
-
-        let surface_texture = match main_ctx.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(t) => t,
-            wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
-            wgpu::CurrentSurfaceTexture::Timeout => return Err(SurfaceError::Timeout),
-            wgpu::CurrentSurfaceTexture::Outdated => return Err(SurfaceError::Outdated),
-            wgpu::CurrentSurfaceTexture::Lost => return Err(SurfaceError::Lost),
-            wgpu::CurrentSurfaceTexture::Occluded => return Err(SurfaceError::Timeout),
-            wgpu::CurrentSurfaceTexture::Validation => {
-                return Err(SurfaceError::Other("Validation error".into()))
+        let surface_texture = {
+            let main_ctx = self.ecs_runtime.world().get_resource::<ecs::MainRenderContextResource>().unwrap();
+            match main_ctx.surface.get_current_texture() {
+                wgpu::CurrentSurfaceTexture::Success(t) => t,
+                wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+                wgpu::CurrentSurfaceTexture::Timeout => return Err(SurfaceError::Timeout),
+                wgpu::CurrentSurfaceTexture::Outdated => return Err(SurfaceError::Outdated),
+                wgpu::CurrentSurfaceTexture::Lost => return Err(SurfaceError::Lost),
+                wgpu::CurrentSurfaceTexture::Occluded => return Err(SurfaceError::Timeout),
+                wgpu::CurrentSurfaceTexture::Validation => {
+                    return Err(SurfaceError::Other("Validation error".into()))
+                }
             }
         };
         let view = surface_texture
@@ -48,11 +49,12 @@ impl State {
             &screen_descriptor,
         );
 
+        let painter_bind_group = self.painter().bind_group.clone();
         self.viewport.render(
+            self.ecs_runtime.world_mut(),
             &mut encoder,
             &view,
-            &main_ctx.depth_view,
-            &self.painter.bind_group,
+            &painter_bind_group,
         );
 
         {

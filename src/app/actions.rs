@@ -1,4 +1,6 @@
-use super::{State, Tool};
+use super::{State, Tool, ecs};
+use bevy_ecs::entity::Entity;
+use bevy_ecs::query::With;
 
 impl State {
     pub fn paint_at_cursor(&mut self) {
@@ -14,14 +16,21 @@ impl State {
         );
         let screen_size = glam::Vec2::new(self.size.width as f32, self.size.height as f32);
 
-        let eye = self.viewport.camera.get_eye();
-        let view = glam::Mat4::look_at_rh(eye, self.viewport.camera.target, glam::Vec3::Y);
-        let proj = glam::Mat4::perspective_rh(
-            self.viewport.camera.fovy,
-            self.viewport.camera.aspect,
-            self.viewport.camera.znear,
-            self.viewport.camera.zfar,
-        );
+        let (eye, view, proj, num_udim_tiles) = {
+            let world = self.ecs_runtime.world();
+            let camera = world.get_resource::<ecs::CameraResource>().expect("CameraResource");
+            let doc = world.get_resource::<ecs::DocumentResource>().expect("DocumentResource");
+            
+            let eye = camera.get_eye();
+            let view = glam::Mat4::look_at_rh(eye, camera.target, glam::Vec3::Y);
+            let proj = glam::Mat4::perspective_rh(
+                camera.fovy,
+                camera.aspect,
+                camera.znear,
+                camera.zfar,
+            );
+            (eye, view, proj, doc.document.num_udim_tiles)
+        };
 
         let ray = crate::raycast::Ray::from_screen(mouse_pos, screen_size, view, proj);
 
@@ -40,7 +49,11 @@ impl State {
         brush_rgba[3] = (effective_opacity * 255.0) as u8;
 
         let raycast_start = std::time::Instant::now();
-        let hit_opt = crate::raycast::intersect_document(&ray, &self.viewport.document);
+        let hit_opt = {
+            let world = self.ecs_runtime.world();
+            let doc = world.get_resource::<ecs::DocumentResource>().expect("DocumentResource");
+            crate::raycast::intersect_document(&ray, &doc.document)
+        };
         let raycast_duration = raycast_start.elapsed();
 
         if let Some(hit) = hit_opt {
@@ -65,48 +78,63 @@ impl State {
                 stroke.point_alphas.push(brush_rgba[3]);
             }
 
-            if let Some(last_uv) = self.interaction.last_hit_uv {
-                self.painter.paint_stroke(
-                    &self.device,
-                    &self.queue,
-                    last_uv,
-                    hit.uv,
-                    self.interaction.last_hit_pos,
-                    Some(hit.point),
-                    brush_rgba,
-                    effective_size,
-                    self.app_state.canvas().brush_hardness,
-                    is_eraser,
-                    self.viewport.document.num_udim_tiles,
-                );
-            } else {
-                log::info!(
-                    "Stroke start coordinates:\n  Screen: [x: {:.2}, y: {:.2}]\n  World:  [x: {:.4}, y: {:.4}, z: {:.4}]\n  UV:     [u: {:.4}, v: {:.4}]\n  Pressure: {:.3}, Size: {:.1}",
-                    mouse_pos.x,
-                    mouse_pos.y,
-                    hit.point.x,
-                    hit.point.y,
-                    hit.point.z,
-                    hit.uv.x,
-                    hit.uv.y,
-                    pressure,
-                    effective_size
-                );
-                self.painter.paint_stamp(
-                    &self.device,
-                    &self.queue,
-                    hit.uv,
-                    Some(hit.point),
-                    brush_rgba,
-                    effective_size,
-                    self.app_state.canvas().brush_hardness,
-                    is_eraser,
-                    self.viewport.document.num_udim_tiles,
-                );
+            // Perform ECS queries for active layer views
+            let world = self.ecs_runtime.world_mut();
+            let mut active_query = world.query_filtered::<&ecs::LayerTexture, With<ecs::ActiveLayer>>();
+            if let Ok(layer_tex) = active_query.get_single(world) {
+                let view_refs: Vec<&wgpu::TextureView> = layer_tex.views.iter().map(|v| &**v).collect();
+                let painter_res = world.get_resource::<ecs::PainterResource>().expect("PainterResource");
+                let painter = &painter_res.0;
+
+                if let Some(last_uv) = self.interaction.last_hit_uv {
+                    painter.paint_stroke_to_views(
+                        &self.device,
+                        &self.queue,
+                        &view_refs,
+                        last_uv,
+                        hit.uv,
+                        self.interaction.last_hit_pos,
+                        Some(hit.point),
+                        brush_rgba,
+                        effective_size,
+                        self.app_state.canvas().brush_hardness,
+                        is_eraser,
+                        num_udim_tiles,
+                    );
+                } else {
+                    log::info!(
+                        "Stroke start coordinates:\n  Screen: [x: {:.2}, y: {:.2}]\n  World:  [x: {:.4}, y: {:.4}, z: {:.4}]\n  UV:     [u: {:.4}, v: {:.4}]\n  Pressure: {:.3}, Size: {:.1}",
+                        mouse_pos.x,
+                        mouse_pos.y,
+                        hit.point.x,
+                        hit.point.y,
+                        hit.point.z,
+                        hit.uv.x,
+                        hit.uv.y,
+                        pressure,
+                        effective_size
+                    );
+                    painter.paint_stamp_to_views(
+                        &self.device,
+                        &self.queue,
+                        &view_refs,
+                        hit.uv,
+                        Some(hit.point),
+                        brush_rgba,
+                        effective_size,
+                        self.app_state.canvas().brush_hardness,
+                        is_eraser,
+                        num_udim_tiles,
+                    );
+                }
             }
+
             let paint_duration = paint_start.elapsed();
             self.interaction.last_hit_uv = Some(hit.uv);
             self.interaction.last_hit_pos = Some(hit.point);
+
+            // Recompose layers
+            self.ecs_runtime.compose_layers_only_ecs(&self.device, &self.queue);
 
             log::debug!(
                 "Paint stroke timing: raycast={:?}, paint={:?}, total={:?}",
@@ -141,32 +169,37 @@ impl State {
                 32,
             ),
         };
-        self.viewport.set_document(doc);
-        self.viewport.update_node_transforms(&self.queue);
-        self.painter.reproject_strokes(&self.viewport.document);
-        self.painter
-            .redraw_all_layers(&self.device, &self.queue, &self.viewport.document);
+        self.ecs_runtime.register_document(doc);
+        self.viewport.update_node_transforms(self.ecs_runtime.world_mut(), &self.queue);
+        self.ecs_runtime.reproject_strokes_ecs();
+        self.ecs_runtime.redraw_all_layers_ecs(&self.device, &self.queue);
         log::info!("Switched geometry to {}", mode);
     }
 
     pub fn export_composite_texture(&self) {
         let path = "painted_texture.png";
-        self.painter.export_png(&self.device, &self.queue, path);
+        self.painter().export_png(&self.device, &self.queue, path);
     }
 
     pub fn load_gltf_file(&mut self, path: &std::path::Path) {
         let (tx, rx) = std::sync::mpsc::channel();
         self.asset_loader.gltf_rx = Some(rx);
-        self.emit_ui_action(crate::app::ecs::events::UiActionEvent::StartGltfLoad);
+        self.emit_ui_action(ecs::events::UiActionEvent::StartGltfLoad);
         self.asset_loader.loading_path = Some(path.to_path_buf());
 
         // Extract strokes from non-fill layers to clone and reproject in background
         let mut strokes_to_reproject = Vec::new();
-        for layer in &self.painter.layers {
-            if !layer.is_fill {
-                strokes_to_reproject.push(layer.strokes.clone());
-            } else {
-                strokes_to_reproject.push(Vec::new());
+        {
+            let mut world = self.ecs_runtime.world_mut();
+            let mut query = world.query::<(&ecs::LayerIndex, &ecs::LayerStrokes, Option<&ecs::FillLayerProperties>)>();
+            let mut layers: Vec<_> = query.iter(world).collect();
+            layers.sort_by_key(|(idx, _, _)| idx.0);
+            for (_, strokes, fill) in layers {
+                if fill.is_none() {
+                    strokes_to_reproject.push(strokes.0.clone());
+                } else {
+                    strokes_to_reproject.push(Vec::new());
+                }
             }
         }
 
@@ -204,30 +237,40 @@ impl State {
     }
 
     pub fn focus_camera_on_model(&mut self) {
-        if let Some((min, max)) = self.viewport.document.compute_bounds() {
+        let bounds_opt = {
+            let world = self.ecs_runtime.world();
+            let doc = world.get_resource::<ecs::DocumentResource>().expect("DocumentResource");
+            doc.document.compute_bounds()
+        };
+
+        if let Some((min, max)) = bounds_opt {
             let center = (min + max) * 0.5;
             let size = max - min;
             let max_dim = size.x.max(size.y).max(size.z);
 
-            self.viewport.camera.target = center;
-            self.viewport.camera.distance = (max_dim * 1.5).max(1.0);
-            log::info!(
-                "Focused camera at center: {:?}, distance: {}",
-                center,
-                self.viewport.camera.distance
-            );
+            let mut world = self.ecs_runtime.world_mut();
+            if let Some(mut camera) = world.get_resource_mut::<ecs::CameraResource>() {
+                camera.target = center;
+                camera.distance = (max_dim * 1.5).max(1.0);
+                log::info!(
+                    "Focused camera at center: {:?}, distance: {}",
+                    center,
+                    camera.distance
+                );
+            }
         }
     }
 
     pub fn recompute_and_reproject(&mut self) {
         log::info!("Recomputing UV layout and reprojecting strokes...");
-        self.viewport
-            .document
-            .recompute_uvs(&self.import_settings, &self.device);
-        self.viewport.update_node_transforms(&self.queue);
-        self.painter.reproject_strokes(&self.viewport.document);
-        self.painter
-            .redraw_all_layers(&self.device, &self.queue, &self.viewport.document);
+        {
+            let mut world = self.ecs_runtime.world_mut();
+            let mut doc = world.get_resource_mut::<ecs::DocumentResource>().expect("DocumentResource");
+            doc.document.recompute_uvs(&self.import_settings, &self.device);
+        }
+        self.viewport.update_node_transforms(self.ecs_runtime.world_mut(), &self.queue);
+        self.ecs_runtime.reproject_strokes_ecs();
+        self.ecs_runtime.redraw_all_layers_ecs(&self.device, &self.queue);
         log::info!("UV layout recomputation and stroke reprojection complete!");
     }
 }

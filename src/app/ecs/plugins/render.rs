@@ -23,6 +23,7 @@ pub fn register(schedule: &mut Schedule) {
         (
             systems::render_3d_viewport_system,
             systems::render_paint_composite_system,
+            systems::layer_compositor_system,
             systems::ecs_render_main_system,
         )
             .chain()

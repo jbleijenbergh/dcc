@@ -4,6 +4,8 @@ use crate::app::ecs::events::{
 };
 use crate::app::tools::ToolSystem;
 use crate::app::{rerender_fill_layer, State, Tool};
+use crate::app::ecs;
+use bevy_ecs::prelude::*;
 
 pub fn apply_document_event_to_app_state(
     app_state: &mut crate::app::app_state::AppState,
@@ -103,29 +105,30 @@ pub fn apply_ui_event_to_app_state(
 }
 
 pub fn apply_viewport_event(state: &mut State, viewport_cmd: &ViewportCommandEvent) {
-    match viewport_cmd {
-        ViewportCommandEvent::Orbit { dx, dy } => {
-            state.viewport.camera.yaw -= (*dx as f64 * 0.005) as f32;
-            state.viewport.camera.pitch =
-                (state.viewport.camera.pitch + (*dy as f64 * 0.005) as f32).clamp(
+    let mut world = state.ecs_runtime.world_mut();
+    if let Some(mut camera) = world.get_resource_mut::<crate::app::ecs::CameraResource>() {
+        match viewport_cmd {
+            ViewportCommandEvent::Orbit { dx, dy } => {
+                camera.yaw -= (*dx as f64 * 0.005) as f32;
+                camera.pitch = (camera.pitch + (*dy as f64 * 0.005) as f32).clamp(
                     -std::f32::consts::FRAC_PI_2 + 0.05,
                     std::f32::consts::FRAC_PI_2 - 0.05,
                 );
-            state.interaction.last_hit_uv = None;
-            state.interaction.last_hit_pos = None;
-        }
-        ViewportCommandEvent::Pan { dx, dy } => {
-            let eye = state.viewport.camera.get_eye();
-            let forward = (state.viewport.camera.target - eye).normalize();
-            let right = forward.cross(glam::Vec3::Y).normalize();
-            let up = right.cross(forward).normalize();
+                state.interaction.last_hit_uv = None;
+                state.interaction.last_hit_pos = None;
+            }
+            ViewportCommandEvent::Pan { dx, dy } => {
+                let eye = camera.get_eye();
+                let forward = (camera.target - eye).normalize();
+                let right = forward.cross(glam::Vec3::Y).normalize();
+                let up = right.cross(forward).normalize();
 
-            let speed = state.viewport.camera.distance * 0.0015;
-            state.viewport.camera.target += right * (-*dx * speed) + up * (*dy * speed);
-        }
-        ViewportCommandEvent::Zoom { scroll } => {
-            state.viewport.camera.distance =
-                (state.viewport.camera.distance - *scroll * 0.25).clamp(1.0, 50.0);
+                let speed = camera.distance * 0.0015;
+                camera.target += right * (-*dx * speed) + up * (*dy * speed);
+            }
+            ViewportCommandEvent::Zoom { scroll } => {
+                camera.distance = (camera.distance - *scroll * 0.25).clamp(1.0, 50.0);
+            }
         }
     }
 }
@@ -197,7 +200,7 @@ pub fn apply_document_event(state: &mut State, command: &DocumentCommandEvent) {
         DocumentCommandEvent::CommitCurrentStroke => state.commit_current_stroke(),
         DocumentCommandEvent::ClearAllLayers => {
             state.push_undo_state();
-            state.painter.clear_all_layers(&state.device, &state.queue);
+            state.ecs_runtime.clear_all_layers_ecs(&state.device, &state.queue);
         }
     }
 }
@@ -257,8 +260,10 @@ pub fn apply_ui_event(state: &mut State, ui_action: &UiActionEvent) {
             state.app_state.document_mut().current_mesh = mesh.clone();
         }
         UiActionEvent::SetActiveScene(scene_idx) => {
-            if *scene_idx < state.viewport.document.scenes.len() {
-                state.viewport.document.active_scene_idx = *scene_idx;
+            if let Some(mut doc) = state.ecs_runtime.world_mut().get_resource_mut::<crate::app::ecs::DocumentResource>() {
+                if *scene_idx < doc.document.scenes.len() {
+                    doc.document.active_scene_idx = *scene_idx;
+                }
             }
         }
         UiActionEvent::SetImportSeams(seams) => {
@@ -296,61 +301,128 @@ pub fn apply_ui_event(state: &mut State, ui_action: &UiActionEvent) {
             state.ui_state.error_time = None;
         }
         UiActionEvent::SelectLayer(idx) => {
-            if *idx < state.painter.layers.len() {
-                state.painter.active_layer_idx = *idx;
+            let mut target_entity = None;
+            let mut active_entities = Vec::new();
+            {
+                let mut world = state.ecs_runtime.world_mut();
+                let mut query = world.query::<(Entity, &ecs::LayerIndex)>();
+                for (entity, layer_idx) in query.iter(world) {
+                    if layer_idx.0 == *idx {
+                        target_entity = Some(entity);
+                    }
+                }
+                let mut active_query = world.query_filtered::<Entity, With<ecs::ActiveLayer>>();
+                for entity in active_query.iter(world) {
+                    active_entities.push(entity);
+                }
+                for entity in active_entities {
+                    world.entity_mut(entity).remove::<ecs::ActiveLayer>();
+                }
+                if let Some(entity) = target_entity {
+                    world.entity_mut(entity).insert(ecs::ActiveLayer);
+                }
             }
         }
         UiActionEvent::AddPaintLayer(name) => {
             let trimmed = name.trim();
             if !trimmed.is_empty() {
                 state.push_undo_state();
-                state
-                    .painter
-                    .add_paint_layer(trimmed.to_string(), &state.device, &state.queue);
+                let texture = ecs::create_layer_texture(&state.device, 1024, 1024);
+                let mut world = state.ecs_runtime.world_mut();
+                let next_idx = {
+                    let mut query = world.query::<&ecs::LayerIndex>();
+                    query.iter(world).map(|idx| idx.0).max().map(|max| max + 1).unwrap_or(0)
+                };
+                let mut active_entities = Vec::new();
+                let mut active_query = world.query_filtered::<Entity, With<ecs::ActiveLayer>>();
+                for entity in active_query.iter(world) {
+                    active_entities.push(entity);
+                }
+                for entity in active_entities {
+                    world.entity_mut(entity).remove::<ecs::ActiveLayer>();
+                }
+                world.spawn((
+                    ecs::LayerName(trimmed.to_string()),
+                    ecs::LayerOpacity(1.0),
+                    ecs::LayerVisibility(true),
+                    ecs::LayerBlendMode(crate::painter::BlendMode::Normal),
+                    ecs::LayerIndex(next_idx),
+                    texture,
+                    ecs::LayerStrokes(Vec::new()),
+                    ecs::ActiveLayer,
+                ));
+                state.ecs_runtime.redraw_all_layers_ecs(&state.device, &state.queue);
             }
         }
         UiActionEvent::AddUvGridLayer => {
             state.push_undo_state();
-            state
-                .painter
-                .load_uv_grid_layer(&state.device, &state.queue);
+            state.ecs_runtime.load_uv_grid_layer_ecs(&state.device, &state.queue);
         }
         UiActionEvent::AddUvCheckerLayer => {
             state.push_undo_state();
-            state
-                .painter
-                .load_uv_checker_layer(&state.device, &state.queue);
+            state.ecs_runtime.load_uv_checker_layer_ecs(&state.device, &state.queue);
         }
         UiActionEvent::AddFillLayer => {
             state.push_undo_state();
-            let name = format!("Fill {}", state.painter.layers.len() + 1);
-            state.painter.add_fill_layer(
-                name,
-                &state.device,
-                &state.queue,
-                &state.viewport.document,
-            );
+            let layer_count = {
+                let mut world = state.ecs_runtime.world_mut();
+                let mut query = world.query::<&ecs::LayerName>();
+                query.iter(world).count()
+            };
+            let name = format!("Fill {}", layer_count + 1);
+            state.ecs_runtime.add_fill_layer_ecs(name, &state.device, &state.queue);
         }
         UiActionEvent::DeleteLayer(idx) => {
-            if state.painter.layers.len() > 1 && *idx < state.painter.layers.len() {
+            let layer_count = {
+                let mut world = state.ecs_runtime.world_mut();
+                let mut query = world.query::<&ecs::LayerName>();
+                query.iter(world).count()
+            };
+            if layer_count > 1 {
                 state.push_undo_state();
-                state
-                    .painter
-                    .delete_layer(*idx, &state.device, &state.queue);
+                state.ecs_runtime.delete_layer_ecs(*idx, &state.device, &state.queue);
             }
         }
         UiActionEvent::SetLayerVisible { idx, visible } => {
-            if *idx < state.painter.layers.len() && state.painter.layers[*idx].visible != *visible {
+            let mut target_entity = None;
+            {
+                let mut world = state.ecs_runtime.world_mut();
+                let mut query = world.query::<(Entity, &ecs::LayerIndex, &ecs::LayerVisibility)>();
+                for (entity, layer_idx, layer_vis) in query.iter(world) {
+                    if layer_idx.0 == *idx {
+                        if layer_vis.0 != *visible {
+                            target_entity = Some(entity);
+                        }
+                        break;
+                    }
+                }
+            }
+            if let Some(entity) = target_entity {
                 state.push_undo_state();
-                state.painter.layers[*idx].visible = *visible;
-                state.painter.compose_layers(&state.device, &state.queue);
+                let mut world = state.ecs_runtime.world_mut();
+                world.entity_mut(entity).insert(ecs::LayerVisibility(*visible));
+                state.ecs_runtime.redraw_all_layers_ecs(&state.device, &state.queue);
             }
         }
         UiActionEvent::SetLayerBlendMode { idx, mode } => {
-            if *idx < state.painter.layers.len() && state.painter.layers[*idx].blend_mode != *mode {
+            let mut target_entity = None;
+            {
+                let mut world = state.ecs_runtime.world_mut();
+                let mut query = world.query::<(Entity, &ecs::LayerIndex, &ecs::LayerBlendMode)>();
+                for (entity, layer_idx, layer_blend) in query.iter(world) {
+                    if layer_idx.0 == *idx {
+                        if layer_blend.0 != *mode {
+                            target_entity = Some(entity);
+                        }
+                        break;
+                    }
+                }
+            }
+            if let Some(entity) = target_entity {
                 state.push_undo_state();
-                state.painter.layers[*idx].blend_mode = *mode;
-                state.painter.compose_layers(&state.device, &state.queue);
+                let mut world = state.ecs_runtime.world_mut();
+                world.entity_mut(entity).insert(ecs::LayerBlendMode(*mode));
+                state.ecs_runtime.redraw_all_layers_ecs(&state.device, &state.queue);
             }
         }
         UiActionEvent::SetLayerOpacity {
@@ -358,12 +430,24 @@ pub fn apply_ui_event(state: &mut State, ui_action: &UiActionEvent) {
             opacity,
             begin_undo,
         } => {
-            if *idx < state.painter.layers.len() {
+            let mut target_entity = None;
+            {
+                let mut world = state.ecs_runtime.world_mut();
+                let mut query = world.query::<(Entity, &ecs::LayerIndex)>();
+                for (entity, layer_idx) in query.iter(world) {
+                    if layer_idx.0 == *idx {
+                        target_entity = Some(entity);
+                        break;
+                    }
+                }
+            }
+            if let Some(entity) = target_entity {
                 if *begin_undo {
                     state.push_undo_state();
                 }
-                state.painter.layers[*idx].opacity = opacity.clamp(0.0, 1.0);
-                state.painter.compose_layers(&state.device, &state.queue);
+                let mut world = state.ecs_runtime.world_mut();
+                world.entity_mut(entity).insert(ecs::LayerOpacity(opacity.clamp(0.0, 1.0)));
+                state.ecs_runtime.redraw_all_layers_ecs(&state.device, &state.queue);
             }
         }
         UiActionEvent::SetFillBaseColor {
@@ -371,12 +455,26 @@ pub fn apply_ui_event(state: &mut State, ui_action: &UiActionEvent) {
             color,
             begin_undo,
         } => {
-            if *idx < state.painter.layers.len() && state.painter.layers[*idx].is_fill {
+            let mut target_entity = None;
+            {
+                let mut world = state.ecs_runtime.world_mut();
+                let mut query = world.query::<(Entity, &ecs::LayerIndex, &ecs::FillLayerProperties)>();
+                for (entity, layer_idx, _) in query.iter(world) {
+                    if layer_idx.0 == *idx {
+                        target_entity = Some(entity);
+                        break;
+                    }
+                }
+            }
+            if let Some(entity) = target_entity {
                 if *begin_undo {
                     state.push_undo_state();
                 }
-                state.painter.layers[*idx].fill_color = *color;
-                rerender_fill_layer(state, *idx);
+                let mut world = state.ecs_runtime.world_mut();
+                if let Some(mut fill) = world.entity_mut(entity).get_mut::<ecs::FillLayerProperties>() {
+                    fill.color = *color;
+                }
+                state.ecs_runtime.redraw_all_layers_ecs(&state.device, &state.queue);
             }
         }
         UiActionEvent::SetFillNoiseColor {
@@ -384,12 +482,26 @@ pub fn apply_ui_event(state: &mut State, ui_action: &UiActionEvent) {
             color,
             begin_undo,
         } => {
-            if *idx < state.painter.layers.len() && state.painter.layers[*idx].is_fill {
+            let mut target_entity = None;
+            {
+                let mut world = state.ecs_runtime.world_mut();
+                let mut query = world.query::<(Entity, &ecs::LayerIndex, &ecs::FillLayerProperties)>();
+                for (entity, layer_idx, _) in query.iter(world) {
+                    if layer_idx.0 == *idx {
+                        target_entity = Some(entity);
+                        break;
+                    }
+                }
+            }
+            if let Some(entity) = target_entity {
                 if *begin_undo {
                     state.push_undo_state();
                 }
-                state.painter.layers[*idx].fill_noise_color = *color;
-                rerender_fill_layer(state, *idx);
+                let mut world = state.ecs_runtime.world_mut();
+                if let Some(mut fill) = world.entity_mut(entity).get_mut::<ecs::FillLayerProperties>() {
+                    fill.noise_color = *color;
+                }
+                state.ecs_runtime.redraw_all_layers_ecs(&state.device, &state.queue);
             }
         }
         UiActionEvent::SetFillNoiseScale {
@@ -397,27 +509,54 @@ pub fn apply_ui_event(state: &mut State, ui_action: &UiActionEvent) {
             scale,
             begin_undo,
         } => {
-            if *idx < state.painter.layers.len() && state.painter.layers[*idx].is_fill {
+            let mut target_entity = None;
+            {
+                let mut world = state.ecs_runtime.world_mut();
+                let mut query = world.query::<(Entity, &ecs::LayerIndex, &ecs::FillLayerProperties)>();
+                for (entity, layer_idx, _) in query.iter(world) {
+                    if layer_idx.0 == *idx {
+                        target_entity = Some(entity);
+                        break;
+                    }
+                }
+            }
+            if let Some(entity) = target_entity {
                 if *begin_undo {
                     state.push_undo_state();
                 }
-                state.painter.layers[*idx].fill_noise_scale = *scale;
-                rerender_fill_layer(state, *idx);
+                let mut world = state.ecs_runtime.world_mut();
+                if let Some(mut fill) = world.entity_mut(entity).get_mut::<ecs::FillLayerProperties>() {
+                    fill.noise_scale = *scale;
+                }
+                state.ecs_runtime.redraw_all_layers_ecs(&state.device, &state.queue);
             }
         }
         UiActionEvent::SetFillProjectionMode { idx, mode } => {
-            if *idx < state.painter.layers.len()
-                && state.painter.layers[*idx].is_fill
-                && state.painter.layers[*idx].fill_projection_mode != *mode
+            let mut target_entity = None;
             {
+                let mut world = state.ecs_runtime.world_mut();
+                let mut query = world.query::<(Entity, &ecs::LayerIndex, &ecs::FillLayerProperties)>();
+                for (entity, layer_idx, fill) in query.iter(world) {
+                    if layer_idx.0 == *idx {
+                        if fill.projection_mode != *mode {
+                            target_entity = Some(entity);
+                        }
+                        break;
+                    }
+                }
+            }
+            if let Some(entity) = target_entity {
                 state.push_undo_state();
-                state.painter.layers[*idx].fill_projection_mode = *mode;
-                rerender_fill_layer(state, *idx);
+                let mut world = state.ecs_runtime.world_mut();
+                if let Some(mut fill) = world.entity_mut(entity).get_mut::<ecs::FillLayerProperties>() {
+                    fill.projection_mode = *mode;
+                }
+                state.ecs_runtime.redraw_all_layers_ecs(&state.device, &state.queue);
             }
         }
         UiActionEvent::ClearCanvas => {
             state.push_undo_state();
-            state.painter.clear_all_layers(&state.device, &state.queue);
+            state.ecs_runtime.clear_all_layers_ecs(&state.device, &state.queue);
         }
         UiActionEvent::Undo => state.undo(),
         UiActionEvent::Redo => state.redo(),

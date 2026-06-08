@@ -1,6 +1,6 @@
 mod actions;
 mod app_state;
-mod ecs;
+pub mod ecs;
 pub(crate) mod input;
 mod input_editor;
 mod render;
@@ -22,6 +22,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use user_preferences::UserPreferences;
 use winit::window::Window;
+use bevy_ecs::entity::Entity;
+use bevy_ecs::query::With;
 
 #[derive(Default)]
 pub(crate) struct InteractionState {
@@ -116,7 +118,6 @@ pub struct State {
 
     // Render pipeline & logic state
     viewport: crate::viewport::Viewport,
-    pub painter: crate::painter::Painter,
 
     // Main window egui state
     main_ui: MainUiRuntime,
@@ -146,6 +147,14 @@ pub struct State {
 }
 
 impl State {
+    pub(crate) fn painter(&self) -> &crate::painter::Painter {
+        &self.ecs_runtime.world().get_resource::<ecs::PainterResource>().expect("PainterResource").0
+    }
+
+    pub(crate) fn painter_mut(&mut self) -> &mut crate::painter::Painter {
+        &mut self.ecs_runtime.world_mut().get_resource_mut::<ecs::PainterResource>().expect("PainterResource").into_inner().0
+    }
+
     pub fn uv_viewer(&self) -> Option<&UvViewerWindow> {
         self.uv_ui.viewer.as_ref()
     }
@@ -216,8 +225,8 @@ impl State {
                 let path = self.asset_loader.loading_path.take().unwrap_or_default();
                 match res {
                     Ok((doc, filename, reprojected_strokes)) => {
-                        self.viewport.set_document(doc);
-                        self.viewport.update_node_transforms(&self.queue);
+                        self.ecs_runtime.register_document(doc);
+                        self.viewport.update_node_transforms(self.ecs_runtime.world_mut(), &self.queue);
                         self.focus_camera_on_model();
                         self.emit_ui_action(ecs::events::UiActionEvent::FinishGltfLoadSuccess {
                             filename,
@@ -225,19 +234,23 @@ impl State {
                         self.process_ecs_step();
 
                         // Assign background reprojected strokes back to layers
+                        let mut layers_query = self.ecs_runtime.world_mut().query::<(
+                            &ecs::LayerIndex,
+                            &mut ecs::LayerStrokes,
+                            Option<&ecs::FillLayerProperties>,
+                        )>();
+                        let mut layers: Vec<_> = layers_query.iter_mut(self.ecs_runtime.world_mut()).collect();
+                        layers.sort_by_key(|(idx, _, _)| idx.0);
+
                         for (layer_idx, strokes) in reprojected_strokes.into_iter().enumerate() {
-                            if layer_idx < self.painter.layers.len()
-                                && !self.painter.layers[layer_idx].is_fill
-                            {
-                                self.painter.layers[layer_idx].strokes = strokes;
+                            if layer_idx < layers.len() {
+                                if layers[layer_idx].2.is_none() { // not a fill layer
+                                    layers[layer_idx].1.0 = strokes;
+                                }
                             }
                         }
 
-                        self.painter.redraw_all_layers(
-                            &self.device,
-                            &self.queue,
-                            &self.viewport.document,
-                        );
+                        self.ecs_runtime.redraw_all_layers_ecs(&self.device, &self.queue);
                         log::info!(
                             "Successfully loaded glTF model — strokes reprojected in background"
                         );
@@ -318,7 +331,7 @@ impl State {
 
             // Register composite and layer textures in the child window's egui renderer
             let mut composite_tex_ids = Vec::new();
-            for view in &self.painter.composite_views {
+            for view in &self.painter().composite_views {
                 let id = egui_renderer.register_native_texture(
                     &self.device,
                     view,
@@ -328,7 +341,7 @@ impl State {
             }
 
             let mut layer_tex_ids = Vec::new();
-            for view in &self.painter.layer_views {
+            for view in &self.painter().layer_views {
                 let id = egui_renderer.register_native_texture(
                     &self.device,
                     view,
@@ -368,10 +381,25 @@ impl State {
 
     pub(crate) fn commit_current_stroke(&mut self) {
         if let Some(stroke) = self.interaction.stroke_in_progress.take() {
-            let active = self.painter.active_layer_idx;
-            if active < self.painter.layers.len() && !self.painter.layers[active].is_fill {
+            let has_fill = {
+                let world = self.ecs_runtime.world_mut();
+                let mut active_query = world.query_filtered::<
+                    Option<&ecs::FillLayerProperties>,
+                    With<ecs::ActiveLayer>
+                >();
+                active_query.get_single(world).ok().flatten().is_some()
+            };
+
+            if !has_fill {
                 self.push_undo_state();
-                self.painter.layers[active].strokes.push(stroke);
+                let world = self.ecs_runtime.world_mut();
+                let mut active_query = world.query_filtered::<
+                    &mut ecs::LayerStrokes,
+                    With<ecs::ActiveLayer>
+                >();
+                if let Ok(mut strokes) = active_query.get_single_mut(world) {
+                    strokes.0.push(stroke);
+                }
             }
         }
         self.interaction.last_hit_uv = None;
@@ -384,9 +412,21 @@ impl State {
     }
 
     pub(crate) fn sync_app_state_snapshot(&mut self) {
-        self.app_state.document_mut().active_layer_idx = self.painter.active_layer_idx;
-        self.app_state.document_mut().layer_count = self.painter.layers.len();
-        self.app_state.document_mut().num_udim_tiles = self.viewport.document.num_udim_tiles;
+        let active_layer_idx = {
+            let world = self.ecs_runtime.world_mut();
+            let mut active_query = world.query_filtered::<&ecs::LayerIndex, With<ecs::ActiveLayer>>();
+            active_query.iter(world).next().map(|idx| idx.0).unwrap_or(0)
+        };
+        let layer_count = {
+            let world = self.ecs_runtime.world_mut();
+            let mut name_query = world.query_filtered::<Entity, With<ecs::LayerName>>();
+            name_query.iter(world).count()
+        };
+        let num_udim_tiles = self.ecs_runtime.world().get_resource::<ecs::DocumentResource>().map(|d| d.document.num_udim_tiles).unwrap_or(1);
+
+        self.app_state.document_mut().active_layer_idx = active_layer_idx;
+        self.app_state.document_mut().layer_count = layer_count;
+        self.app_state.document_mut().num_udim_tiles = num_udim_tiles as u32;
 
         self.app_state.history_mut().undo_len = self.app_state.history().undo_stack.len();
         self.app_state.history_mut().redo_len = self.app_state.history().redo_stack.len();
@@ -394,19 +434,30 @@ impl State {
         self.app_state.input_mut().pan_modifier = self.app_state.input().alt;
 
         // Sync camera data
-        let camera_mut = self.app_state.camera_mut();
-        camera_mut.eye = self.viewport.camera.get_eye();
-        camera_mut.target = self.viewport.camera.target;
-        camera_mut.yaw = self.viewport.camera.yaw;
-        camera_mut.pitch = self.viewport.camera.pitch;
-        camera_mut.distance = self.viewport.camera.distance;
-        camera_mut.fov = self.viewport.camera.fovy;
-        camera_mut.aspect = self.viewport.camera.aspect;
+        if let Some(camera) = self.ecs_runtime.world().get_resource::<ecs::CameraResource>() {
+            let camera_mut = self.app_state.camera_mut();
+            camera_mut.eye = camera.get_eye();
+            camera_mut.target = camera.target;
+            camera_mut.yaw = camera.yaw;
+            camera_mut.pitch = camera.pitch;
+            camera_mut.distance = camera.distance;
+            camera_mut.fov = camera.fovy;
+            camera_mut.aspect = camera.aspect;
+        }
 
         // Sync layer composition data
+        let mut layers: Vec<_> = {
+            let world = self.ecs_runtime.world_mut();
+            let mut query = world.query::<(&ecs::LayerIndex, &ecs::LayerVisibility, &ecs::LayerOpacity)>();
+            query
+                .iter(world)
+                .map(|(idx, vis, opacity)| (idx.0, vis.0, opacity.0))
+                .collect()
+        };
+        layers.sort_by_key(|(idx, _, _)| *idx);
         let composition_mut = self.app_state.layer_composition_mut();
-        composition_mut.visibilities = self.painter.layers.iter().map(|l| l.visible).collect();
-        composition_mut.opacities = self.painter.layers.iter().map(|l| l.opacity).collect();
+        composition_mut.visibilities = layers.iter().map(|(_, vis, _)| *vis).collect();
+        composition_mut.opacities = layers.iter().map(|(_, _, opacity)| *opacity).collect();
     }
 
     pub fn set_uv_viewer_visible(&mut self, visible: bool) {
@@ -457,9 +508,10 @@ impl State {
         // Clear redo stack when a new action is performed
         self.app_state.history_mut().redo_stack.clear();
 
+        let active_layer_idx = self.app_state.document().active_layer_idx;
         let undo_state = app_state::UndoState {
-            layers: self.painter.layers.clone(),
-            active_layer_idx: self.painter.active_layer_idx,
+            layers: self.ecs_runtime.get_layers_snapshot(),
+            active_layer_idx,
         };
         self.app_state.history_mut().undo_stack.push(undo_state);
 
@@ -470,17 +522,20 @@ impl State {
 
     pub fn undo(&mut self) {
         if let Some(prev_state) = self.app_state.history_mut().undo_stack.pop() {
+            let active_layer_idx = self.app_state.document().active_layer_idx;
             let current_state = app_state::UndoState {
-                layers: self.painter.layers.clone(),
-                active_layer_idx: self.painter.active_layer_idx,
+                layers: self.ecs_runtime.get_layers_snapshot(),
+                active_layer_idx,
             };
             self.app_state.history_mut().redo_stack.push(current_state);
 
-            self.painter.layers = prev_state.layers;
-            self.painter.active_layer_idx = prev_state.active_layer_idx;
+            self.app_state.document_mut().active_layer_idx = prev_state.active_layer_idx;
+            self.app_state.document_mut().layer_count = prev_state.layers.len();
 
-            self.painter
-                .redraw_all_layers(&self.device, &self.queue, &self.viewport.document);
+            self.ecs_runtime.restore_layers_snapshot(&prev_state.layers, prev_state.active_layer_idx, &self.device);
+
+            self.ecs_runtime
+                .redraw_all_layers_ecs(&self.device, &self.queue);
             log::info!(
                 "Performed Undo. Undo stack size: {}, Redo stack size: {}",
                 self.app_state.history().undo_stack.len(),
@@ -493,17 +548,20 @@ impl State {
 
     pub fn redo(&mut self) {
         if let Some(next_state) = self.app_state.history_mut().redo_stack.pop() {
+            let active_layer_idx = self.app_state.document().active_layer_idx;
             let current_state = app_state::UndoState {
-                layers: self.painter.layers.clone(),
-                active_layer_idx: self.painter.active_layer_idx,
+                layers: self.ecs_runtime.get_layers_snapshot(),
+                active_layer_idx,
             };
             self.app_state.history_mut().undo_stack.push(current_state);
 
-            self.painter.layers = next_state.layers;
-            self.painter.active_layer_idx = next_state.active_layer_idx;
+            self.app_state.document_mut().active_layer_idx = next_state.active_layer_idx;
+            self.app_state.document_mut().layer_count = next_state.layers.len();
 
-            self.painter
-                .redraw_all_layers(&self.device, &self.queue, &self.viewport.document);
+            self.ecs_runtime.restore_layers_snapshot(&next_state.layers, next_state.active_layer_idx, &self.device);
+
+            self.ecs_runtime
+                .redraw_all_layers_ecs(&self.device, &self.queue);
             log::info!(
                 "Performed Redo. Undo stack size: {}, Redo stack size: {}",
                 self.app_state.history().undo_stack.len(),
@@ -516,35 +574,73 @@ impl State {
 }
 
 /// Re-renders a fill layer's GPU texture. Read-only operation with rendering side effects.
-pub fn rerender_fill_layer(state: &State, idx: usize) {
-    if idx >= state.painter.layers.len() || !state.painter.layers[idx].is_fill {
-        return;
+pub fn rerender_fill_layer(state: &mut State, idx: usize) {
+    let (views_cloned, base, noise, fill_noise_scale, fill_projection_mode) = {
+        let mut query = state.ecs_runtime.world_mut().query::<(
+            &ecs::LayerIndex,
+            &ecs::LayerTexture,
+            &ecs::FillLayerProperties,
+        )>();
+
+        let Some((_, texture_comp, fill)) = query
+            .iter(state.ecs_runtime.world_mut())
+            .find(|(index, _, _)| index.0 == idx) else {
+                return;
+            };
+
+        let base = [
+            fill.color[0] as f32 / 255.0,
+            fill.color[1] as f32 / 255.0,
+            fill.color[2] as f32 / 255.0,
+            fill.color[3] as f32 / 255.0,
+        ];
+        let noise = [
+            fill.noise_color[0] as f32 / 255.0,
+            fill.noise_color[1] as f32 / 255.0,
+            fill.noise_color[2] as f32 / 255.0,
+            fill.noise_color[3] as f32 / 255.0,
+        ];
+
+        (texture_comp.views.clone(), base, noise, fill.noise_scale, fill.projection_mode)
+    };
+
+    let mut nodes = Vec::new();
+    {
+        let world = state.ecs_runtime.world_mut();
+        let mut mesh_query = world.query::<(&ecs::MeshHandle, &ecs::NodeGpuResources)>();
+        for (mesh, gpu_res) in mesh_query.iter(world) {
+            nodes.push((mesh.0.clone(), gpu_res.bind_group.clone()));
+        }
     }
 
-    let layer = &state.painter.layers[idx];
-    let base = [
-        layer.fill_color[0] as f32 / 255.0,
-        layer.fill_color[1] as f32 / 255.0,
-        layer.fill_color[2] as f32 / 255.0,
-        layer.fill_color[3] as f32 / 255.0,
-    ];
-    let noise = [
-        layer.fill_noise_color[0] as f32 / 255.0,
-        layer.fill_noise_color[1] as f32 / 255.0,
-        layer.fill_noise_color[2] as f32 / 255.0,
-        layer.fill_noise_color[3] as f32 / 255.0,
-    ];
-    state.painter.render_fill_layer(
+    let view_refs: Vec<&wgpu::TextureView> = views_cloned.iter().map(|v| &**v).collect();
+    let node_refs: Vec<(&crate::mesh::Mesh, &wgpu::BindGroup)> = nodes
+        .iter()
+        .map(|(m, bg)| (&**m, &**bg))
+        .collect();
+
+    state.painter().render_fill_layer_to_views(
         &state.device,
         &state.queue,
-        idx,
+        &view_refs,
         base,
         noise,
-        layer.fill_noise_scale,
-        layer.fill_projection_mode,
-        &state.viewport.document,
+        fill_noise_scale,
+        fill_projection_mode,
+        &node_refs,
     );
-    state.painter.compose_layers(&state.device, &state.queue);
+
+    // Call compose_layers_ecs to update the composition
+    let mut compose_query = state.ecs_runtime.world_mut().query::<(&ecs::LayerIndex, &ecs::LayerVisibility, &ecs::LayerOpacity, &ecs::LayerBlendMode)>();
+    let mut compose_layers: Vec<_> = compose_query.iter(state.ecs_runtime.world_mut()).collect();
+    compose_layers.sort_by_key(|(idx, _, _, _)| idx.0);
+
+    let active_layers_data: Vec<(f32, crate::painter::BlendMode, bool)> = compose_layers
+        .iter()
+        .map(|(_, vis, opacity, blend)| (opacity.0, blend.0, vis.0))
+        .collect();
+
+    state.painter().compose_layers_ecs(&state.device, &state.queue, &active_layers_data);
 }
 
 #[cfg(all(test, not(target_os = "macos")))]

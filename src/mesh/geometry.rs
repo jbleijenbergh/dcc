@@ -43,11 +43,12 @@ pub struct NodeUniform {
     pub normal_matrix: [[f32; 4]; 4],
 }
 
+#[derive(Clone)]
 pub struct Primitive {
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
-    pub vertex_buffer: wgpu::Buffer,
-    pub index_buffer: wgpu::Buffer,
+    pub vertex_buffer: std::sync::Arc<wgpu::Buffer>,
+    pub index_buffer: std::sync::Arc<wgpu::Buffer>,
     pub num_indices: u32,
     pub material_index: Option<usize>,
     pub bounds_min: glam::Vec3,
@@ -63,16 +64,16 @@ impl Primitive {
     ) -> Self {
         use wgpu::util::DeviceExt;
         let num_indices = indices.len() as u32;
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let vertex_buffer = std::sync::Arc::new(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some(&format!("{} Primitive Vertex Buffer", label)),
             contents: bytemuck::cast_slice(&vertices),
             usage: wgpu::BufferUsages::VERTEX,
-        });
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        }));
+        let index_buffer = std::sync::Arc::new(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some(&format!("{} Primitive Index Buffer", label)),
             contents: bytemuck::cast_slice(&indices),
             usage: wgpu::BufferUsages::INDEX,
-        });
+        }));
 
         let mut bounds_min = glam::Vec3::splat(f32::MAX);
         let mut bounds_max = glam::Vec3::splat(f32::MIN);
@@ -104,16 +105,16 @@ impl Primitive {
         self.vertices = vertices;
         self.indices = indices;
         self.num_indices = self.indices.len() as u32;
-        self.vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        self.vertex_buffer = std::sync::Arc::new(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Primitive Vertex Buffer"),
             contents: bytemuck::cast_slice(&self.vertices),
             usage: wgpu::BufferUsages::VERTEX,
-        });
-        self.index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        }));
+        self.index_buffer = std::sync::Arc::new(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Primitive Index Buffer"),
             contents: bytemuck::cast_slice(&self.indices),
             usage: wgpu::BufferUsages::INDEX,
-        });
+        }));
 
         let mut bounds_min = glam::Vec3::splat(f32::MAX);
         let mut bounds_max = glam::Vec3::splat(f32::MIN);
@@ -127,10 +128,12 @@ impl Primitive {
     }
 }
 
+#[derive(Clone)]
 pub struct Mesh {
     pub primitives: Vec<Primitive>,
 }
 
+#[derive(Clone)]
 pub struct Node {
     pub name: Option<String>,
     pub translation: glam::Vec3,
@@ -138,8 +141,8 @@ pub struct Node {
     pub scale: glam::Vec3,
     pub mesh: Option<Mesh>,
     pub children: Vec<usize>,
-    pub uniform_buffer: wgpu::Buffer,
-    pub bind_group: wgpu::BindGroup,
+    pub uniform_buffer: std::sync::Arc<wgpu::Buffer>,
+    pub bind_group: std::sync::Arc<wgpu::BindGroup>,
 }
 
 impl Node {
@@ -157,11 +160,13 @@ impl Node {
     }
 }
 
+#[derive(Clone)]
 pub struct Scene {
     pub name: Option<String>,
     pub root_nodes: Vec<usize>,
 }
 
+#[derive(Clone)]
 pub struct Document {
     pub scenes: Vec<Scene>,
     pub nodes: Vec<Node>,
@@ -228,21 +233,21 @@ impl Document {
             primitives: vec![primitive],
         };
 
-        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let uniform_buffer = std::sync::Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(&format!("{} Node Uniform Buffer", label)),
             size: 128, // 2 * 64 bytes
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
-        });
+        }));
 
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let bind_group = std::sync::Arc::new(device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: uniform_buffer.as_entire_binding(),
             }],
             label: Some(&format!("{} Node Bind Group", label)),
-        });
+        }));
 
         let node = Node {
             name: Some(label.to_string()),
@@ -281,6 +286,49 @@ impl Document {
             self.collect_nodes_recursive(root_idx, glam::Mat4::IDENTITY, &mut list);
         }
         list
+    }
+
+    pub fn into_active_nodes(mut self) -> Vec<(Option<String>, glam::Mat4, Mesh, std::sync::Arc<wgpu::Buffer>, std::sync::Arc<wgpu::BindGroup>)> {
+        let mut list = Vec::new();
+        if self.scenes.is_empty() {
+            return list;
+        }
+        let scene = &self.scenes[self.active_scene_idx];
+        let mut world_matrices = vec![glam::Mat4::IDENTITY; self.nodes.len()];
+        let mut active_indices = std::collections::HashSet::new();
+        for &root_idx in &scene.root_nodes {
+            self.collect_indices_and_matrices_recursive(root_idx, glam::Mat4::IDENTITY, &mut world_matrices, &mut active_indices);
+        }
+
+        let nodes = std::mem::take(&mut self.nodes);
+        for (idx, node) in nodes.into_iter().enumerate() {
+            if active_indices.contains(&idx) {
+                if let Some(mesh) = node.mesh {
+                    let matrix = world_matrices[idx];
+                    list.push((node.name, matrix, mesh, node.uniform_buffer, node.bind_group));
+                }
+            }
+        }
+        list
+    }
+
+    fn collect_indices_and_matrices_recursive(
+        &self,
+        node_idx: usize,
+        parent_world: glam::Mat4,
+        world_matrices: &mut [glam::Mat4],
+        active_indices: &mut std::collections::HashSet<usize>,
+    ) {
+        if node_idx >= self.nodes.len() {
+            return;
+        }
+        let node = &self.nodes[node_idx];
+        let world = parent_world * node.local_transform();
+        world_matrices[node_idx] = world;
+        active_indices.insert(node_idx);
+        for &child_idx in &node.children {
+            self.collect_indices_and_matrices_recursive(child_idx, world, world_matrices, active_indices);
+        }
     }
 
     fn collect_nodes_recursive<'a>(

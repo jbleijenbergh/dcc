@@ -9,6 +9,198 @@ use bevy_ecs::prelude::*;
 pub mod domain;
 mod plugins;
 
+// --- Layer Components ---
+#[derive(Component, Clone, Debug)]
+pub struct LayerName(pub String);
+
+#[derive(Component, Clone, Copy, Debug)]
+pub struct LayerOpacity(pub f32);
+
+#[derive(Component, Clone, Copy, Debug)]
+pub struct LayerVisibility(pub bool);
+
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LayerBlendMode(pub crate::painter::BlendMode);
+
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LayerIndex(pub usize);
+
+#[derive(Component, Clone, Debug)]
+pub struct LayerTexture {
+    pub texture: std::sync::Arc<wgpu::Texture>,
+    pub views: Vec<std::sync::Arc<wgpu::TextureView>>, // size 4 (UDIMs)
+}
+
+#[derive(Component, Clone, Debug, Default)]
+pub struct LayerStrokes(pub Vec<crate::painter::PaintStroke>);
+
+#[derive(Component, Clone, Debug)]
+pub struct FillLayerProperties {
+    pub color: [u8; 4],
+    pub noise_color: [u8; 4],
+    pub noise_scale: f32,
+    pub projection_mode: u32,
+}
+
+#[derive(Component, Clone, Debug)]
+pub struct ActiveLayer;
+
+// --- 3D Mesh Components ---
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Transform {
+    pub translation: glam::Vec3,
+    pub rotation: glam::Quat,
+    pub scale: glam::Vec3,
+}
+
+impl Default for Transform {
+    fn default() -> Self {
+        Self {
+            translation: glam::Vec3::ZERO,
+            rotation: glam::Quat::IDENTITY,
+            scale: glam::Vec3::ONE,
+        }
+    }
+}
+
+impl Transform {
+    pub fn to_matrix(&self) -> glam::Mat4 {
+        glam::Mat4::from_scale_rotation_translation(self.scale, self.rotation, self.translation)
+    }
+}
+
+#[derive(Component, Clone)]
+pub struct MeshHandle(pub std::sync::Arc<crate::mesh::Mesh>);
+
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Aabb {
+    pub min: glam::Vec3,
+    pub max: glam::Vec3,
+}
+
+#[derive(Component)]
+pub struct NodeGpuResources {
+    pub uniform_buffer: std::sync::Arc<wgpu::Buffer>,
+    pub bind_group: std::sync::Arc<wgpu::BindGroup>,
+}
+
+// --- Camera & Viewport Resources ---
+#[derive(Resource, Clone, Copy, Debug)]
+pub struct CameraResource {
+    pub target: glam::Vec3,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub distance: f32,
+    pub aspect: f32,
+    pub fovy: f32,
+    pub znear: f32,
+    pub zfar: f32,
+}
+
+impl Default for CameraResource {
+    fn default() -> Self {
+        Self {
+            target: glam::Vec3::ZERO,
+            yaw: std::f32::consts::FRAC_PI_4,
+            pitch: 0.25,
+            distance: 4.5,
+            aspect: 1.0,
+            fovy: std::f32::consts::FRAC_PI_4,
+            znear: 0.1,
+            zfar: 100.0,
+        }
+    }
+}
+
+impl CameraResource {
+    pub fn get_eye(&self) -> glam::Vec3 {
+        let x = self.distance * self.pitch.cos() * self.yaw.cos() + self.target.x;
+        let y = self.distance * self.pitch.sin() + self.target.y;
+        let z = self.distance * self.pitch.cos() * self.yaw.sin() + self.target.z;
+        glam::Vec3::new(x, y, z)
+    }
+
+    pub fn build_view_projection_matrix(&self) -> glam::Mat4 {
+        let eye = self.get_eye();
+        let view = glam::Mat4::look_at_rh(eye, self.target, glam::Vec3::Y);
+        let proj = glam::Mat4::perspective_rh(self.fovy, self.aspect, self.znear, self.zfar);
+        proj * view
+    }
+}
+
+#[derive(Resource)]
+pub struct CameraGpuResources {
+    pub buffer: wgpu::Buffer,
+    pub bind_group: wgpu::BindGroup,
+}
+
+#[derive(Resource, Clone, Copy, Debug)]
+pub struct ViewportSettingsResource {
+    pub light_angle: f32,
+    pub light_intensity: f32,
+    pub ambient_strength: f32,
+    pub view_transform: crate::viewport::ViewTransform,
+    pub exposure: f32,
+}
+
+impl Default for ViewportSettingsResource {
+    fn default() -> Self {
+        Self {
+            light_angle: 0.0,
+            light_intensity: 1.0,
+            ambient_strength: 0.25,
+            view_transform: crate::viewport::ViewTransform::Standard,
+            exposure: 1.0,
+        }
+    }
+}
+
+#[derive(Resource)]
+pub struct DocumentResource {
+    pub document: crate::mesh::Document,
+}
+
+#[derive(Resource)]
+pub struct PainterResource(pub crate::painter::Painter);
+
+pub fn create_layer_texture(device: &wgpu::Device, width: u32, height: u32) -> LayerTexture {
+    let size = wgpu::Extent3d {
+        width,
+        height,
+        depth_or_array_layers: crate::painter::MAX_UDIMS as u32,
+    };
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("ECS Layer Texture"),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::COPY_DST
+            | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+
+    let mut views = Vec::new();
+    for i in 0..crate::painter::MAX_UDIMS {
+        views.push(std::sync::Arc::new(texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some(&format!("ECS Layer View Tile {}", i)),
+            dimension: Some(wgpu::TextureViewDimension::D2),
+            base_array_layer: i as u32,
+            array_layer_count: Some(1),
+            ..Default::default()
+        })));
+    }
+
+    LayerTexture {
+        texture: std::sync::Arc::new(texture),
+        views,
+    }
+}
+
+
 /// Phase 3: System sets for deterministic frame flow.
 /// Each set represents a logical phase in the frame.
 ///
@@ -248,7 +440,7 @@ pub struct MainRenderContextResource {
 }
 
 /// Resource wrapper for user preferences and settings.
-#[derive(Resource, Clone)]
+#[derive(Resource, Clone, Default)]
 pub struct PreferencesResource(pub crate::app::user_preferences::UserPreferences);
 
 /// Resource wrapper for GPU context handles.
@@ -451,6 +643,10 @@ impl EcsRuntime {
         world.init_resource::<ToolRuntimeResource>();
         world.insert_resource(HostStatePtr(std::ptr::null_mut()));
         world.init_resource::<RenderErrorResource>();
+        world.init_resource::<CameraResource>();
+        world.init_resource::<ViewportSettingsResource>();
+        world.init_resource::<InteractionStateResource>();
+        world.init_resource::<PreferencesResource>();
 
         // Phase 3: Initialize ordered schedules for deterministic frame flow.
         // The main schedule will execute each phase in order.
@@ -477,6 +673,615 @@ impl EcsRuntime {
     /// Register a domain state resource into the world.
     pub fn register_domain_state(&mut self, app_state: crate::app::app_state::AppState) {
         self.world.insert_resource(DomainStateResource(app_state));
+    }
+
+    /// Register a Document by spawning its meshes as ECS entities and setting the DocumentResource.
+    pub fn register_document(&mut self, document: crate::mesh::Document) {
+        // Extract active nodes from a cloned document so we don't consume the original
+        let active_nodes = document.clone().into_active_nodes();
+
+        let mut world = self.world_mut();
+
+        // 1. Despawn existing mesh entities
+        let old_entities: Vec<Entity> = world
+            .query_filtered::<Entity, With<MeshHandle>>()
+            .iter(world)
+            .collect();
+        for entity in old_entities {
+            world.despawn(entity);
+        }
+
+        // 2. Spawn entities for active nodes
+        for (_name, world_matrix, mesh, uniform_buffer, bind_group) in active_nodes {
+            let (scale, rotation, translation) = world_matrix.to_scale_rotation_translation();
+
+            let mut bounds_min = glam::Vec3::splat(f32::MAX);
+            let mut bounds_max = glam::Vec3::splat(f32::MIN);
+            for primitive in &mesh.primitives {
+                bounds_min = bounds_min.min(primitive.bounds_min);
+                bounds_max = bounds_max.max(primitive.bounds_max);
+            }
+            let aabb = Aabb {
+                min: bounds_min,
+                max: bounds_max,
+            };
+
+            world.spawn((
+                Transform {
+                    translation,
+                    rotation,
+                    scale,
+                },
+                MeshHandle(std::sync::Arc::new(mesh)),
+                aabb,
+                NodeGpuResources {
+                    uniform_buffer,
+                    bind_group,
+                },
+            ));
+        }
+
+        // 3. Insert/update DocumentResource
+        world.insert_resource(DocumentResource {
+            document,
+        });
+    }
+
+    pub fn init_default_layer(&mut self, device: &wgpu::Device) {
+        let texture = create_layer_texture(device, 1024, 1024);
+        let mut world = self.world_mut();
+
+        world.spawn((
+            LayerName("Layer 1".to_string()),
+            LayerOpacity(1.0),
+            LayerVisibility(true),
+            LayerBlendMode(crate::painter::BlendMode::Normal),
+            LayerIndex(0),
+            texture,
+            LayerStrokes(Vec::new()),
+            ActiveLayer,
+        ));
+    }
+
+    pub fn clear_all_layers_ecs(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        let mut world = self.world_mut();
+        let layers: Vec<Entity> = world
+            .query_filtered::<Entity, With<LayerName>>()
+            .iter(world)
+            .collect();
+        for entity in layers {
+            world.despawn(entity);
+        }
+        self.init_default_layer(device);
+        self.redraw_all_layers_ecs(device, queue);
+    }
+
+    pub fn load_uv_grid_layer_ecs(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        let trimmed = "UV Grid";
+        let mut world = self.world_mut();
+        
+        let next_idx = {
+            let mut query = world.query::<&LayerIndex>();
+            query.iter(world).map(|idx| idx.0).max().map(|max| max + 1).unwrap_or(0)
+        };
+
+        let mut active_entities = Vec::new();
+        let mut active_query = world.query_filtered::<Entity, With<ActiveLayer>>();
+        for entity in active_query.iter(world) {
+            active_entities.push(entity);
+        }
+        for entity in active_entities {
+            world.entity_mut(entity).remove::<ActiveLayer>();
+        }
+
+        let texture = create_layer_texture(device, 1024, 1024);
+
+        let img = match image::open("uv_grid.png") {
+            Ok(img) => img.into_rgba8(),
+            Err(e) => {
+                log::error!("Failed to load uv_grid.png: {}", e);
+                return;
+            }
+        };
+
+        for i in 0..crate::painter::MAX_UDIMS {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d {
+                        x: 0,
+                        y: 0,
+                        z: i as u32,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &img,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(4 * 1024),
+                    rows_per_image: Some(1024),
+                },
+                wgpu::Extent3d {
+                    width: 1024,
+                    height: 1024,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+
+        world.spawn((
+            LayerName(trimmed.to_string()),
+            LayerOpacity(1.0),
+            LayerVisibility(true),
+            LayerBlendMode(crate::painter::BlendMode::Normal),
+            LayerIndex(next_idx),
+            texture,
+            LayerStrokes(Vec::new()),
+            ActiveLayer,
+        ));
+
+        self.redraw_all_layers_ecs(device, queue);
+    }
+
+    pub fn load_uv_checker_layer_ecs(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        let trimmed = "UV Checker";
+        let mut world = self.world_mut();
+        
+        let next_idx = {
+            let mut query = world.query::<&LayerIndex>();
+            query.iter(world).map(|idx| idx.0).max().map(|max| max + 1).unwrap_or(0)
+        };
+
+        let mut active_entities = Vec::new();
+        let mut active_query = world.query_filtered::<Entity, With<ActiveLayer>>();
+        for entity in active_query.iter(world) {
+            active_entities.push(entity);
+        }
+        for entity in active_entities {
+            world.entity_mut(entity).remove::<ActiveLayer>();
+        }
+
+        let texture = create_layer_texture(device, 1024, 1024);
+
+        for t in 0..crate::painter::MAX_UDIMS {
+            let filename = format!("UV-CheckerMap_Maurus_0{}_8K.png", t + 1);
+            let img = match image::open(&filename) {
+                Ok(img) => img.into_rgba8(),
+                Err(e) => {
+                    log::error!("Failed to load {}: {}", filename, e);
+                    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+                    {
+                        let _rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("Clear Missing Checker Tile"),
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: &texture.views[t],
+                                resolve_target: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                                    store: wgpu::StoreOp::Store,
+                                },
+                                depth_slice: None,
+                            })],
+                            depth_stencil_attachment: None,
+                            occlusion_query_set: None,
+                            timestamp_writes: None,
+                            multiview_mask: None,
+                        });
+                    }
+                    queue.submit(std::iter::once(encoder.finish()));
+                    continue;
+                }
+            };
+
+            let resized_img = if img.width() != 1024 || img.height() != 1024 {
+                image::imageops::resize(&img, 1024, 1024, image::imageops::FilterType::Triangle)
+            } else {
+                img
+            };
+
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d {
+                        x: 0,
+                        y: 0,
+                        z: t as u32,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &resized_img,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(4 * 1024),
+                    rows_per_image: Some(1024),
+                },
+                wgpu::Extent3d {
+                    width: 1024,
+                    height: 1024,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+
+        world.spawn((
+            LayerName(trimmed.to_string()),
+            LayerOpacity(1.0),
+            LayerVisibility(true),
+            LayerBlendMode(crate::painter::BlendMode::Normal),
+            LayerIndex(next_idx),
+            texture,
+            LayerStrokes(Vec::new()),
+            ActiveLayer,
+        ));
+
+        self.redraw_all_layers_ecs(device, queue);
+    }
+
+    pub fn add_fill_layer_ecs(&mut self, name: String, device: &wgpu::Device, queue: &wgpu::Queue) {
+        let mut world = self.world_mut();
+        
+        let next_idx = {
+            let mut query = world.query::<&LayerIndex>();
+            query.iter(world).map(|idx| idx.0).max().map(|max| max + 1).unwrap_or(0)
+        };
+
+        let mut active_entities = Vec::new();
+        let mut active_query = world.query_filtered::<Entity, With<ActiveLayer>>();
+        for entity in active_query.iter(world) {
+            active_entities.push(entity);
+        }
+        for entity in active_entities {
+            world.entity_mut(entity).remove::<ActiveLayer>();
+        }
+
+        let texture = create_layer_texture(device, 1024, 1024);
+
+        world.spawn((
+            LayerName(name),
+            LayerOpacity(1.0),
+            LayerVisibility(true),
+            LayerBlendMode(crate::painter::BlendMode::Normal),
+            LayerIndex(next_idx),
+            texture,
+            LayerStrokes(Vec::new()),
+            FillLayerProperties {
+                color: [128, 128, 128, 255],
+                noise_color: [255, 255, 255, 255],
+                noise_scale: 10.0,
+                projection_mode: 0,
+            },
+            ActiveLayer,
+        ));
+
+        self.redraw_all_layers_ecs(device, queue);
+    }
+
+    pub fn delete_layer_ecs(&mut self, index: usize, device: &wgpu::Device, queue: &wgpu::Queue) {
+        let mut world = self.world_mut();
+        
+        let mut entity_to_delete = None;
+        let mut query = world.query::<(Entity, &LayerIndex)>();
+        for (entity, idx) in query.iter(world) {
+            if idx.0 == index {
+                entity_to_delete = Some(entity);
+            }
+        }
+
+        let was_active = if let Some(ent) = entity_to_delete {
+            let active = world.entity(ent).contains::<ActiveLayer>();
+            world.despawn(ent);
+            active
+        } else {
+            return;
+        };
+
+        let mut idx_query = world.query::<(Entity, &mut LayerIndex)>();
+        for (_, mut idx) in idx_query.iter_mut(world) {
+            if idx.0 > index {
+                idx.0 -= 1;
+            }
+        }
+
+        if was_active {
+            let mut max_idx = 0;
+            let mut max_entity = None;
+            let mut query = world.query::<(Entity, &LayerIndex)>();
+            for (entity, idx) in query.iter(world) {
+                if idx.0 >= max_idx {
+                    max_idx = idx.0;
+                    max_entity = Some(entity);
+                }
+            }
+            let target_active_idx = index.min(max_idx);
+            let mut query = world.query::<(Entity, &LayerIndex)>();
+            for (entity, idx) in query.iter(world) {
+                if idx.0 == target_active_idx {
+                    world.entity_mut(entity).insert(ActiveLayer);
+                    break;
+                }
+            }
+        }
+
+        self.redraw_all_layers_ecs(device, queue);
+    }
+
+    pub fn redraw_all_layers_ecs(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        let mut world = self.world_mut();
+
+        let mut nodes = Vec::new();
+        {
+            let mut mesh_query = world.query::<(&MeshHandle, &NodeGpuResources)>();
+            for (mesh, gpu_res) in mesh_query.iter(world) {
+                nodes.push((mesh.0.clone(), gpu_res.bind_group.clone()));
+            }
+        }
+
+        let mut painter_res = world.remove_resource::<PainterResource>().expect("PainterResource");
+        let painter = &painter_res.0;
+
+        let doc_res = world.get_resource::<DocumentResource>().expect("DocumentResource");
+        let num_udim_tiles = doc_res.document.num_udim_tiles;
+
+        let mut layers_query = world.query::<(
+            &LayerIndex,
+            &LayerTexture,
+            &LayerStrokes,
+            Option<&FillLayerProperties>,
+        )>();
+        let mut layers: Vec<_> = layers_query.iter(world).collect();
+        layers.sort_by_key(|(idx, _, _, _)| idx.0);
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Clear ECS Layers") });
+        for (_, texture_comp, _, _) in &layers {
+            for t in 0..crate::painter::MAX_UDIMS {
+                let _rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Clear ECS Layer Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &texture_comp.views[t],
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    depth_stencil_attachment: None,
+                    occlusion_query_set: None,
+                    timestamp_writes: None,
+                    multiview_mask: None,
+                });
+            }
+        }
+        queue.submit(std::iter::once(encoder.finish()));
+
+        for (_, texture_comp, strokes, fill_props) in &layers {
+            let view_refs: Vec<&wgpu::TextureView> = texture_comp.views.iter().map(|v| &**v).collect();
+            if let Some(fill) = fill_props {
+                let base = [
+                    fill.color[0] as f32 / 255.0,
+                    fill.color[1] as f32 / 255.0,
+                    fill.color[2] as f32 / 255.0,
+                    fill.color[3] as f32 / 255.0,
+                ];
+                let noise = [
+                    fill.noise_color[0] as f32 / 255.0,
+                    fill.noise_color[1] as f32 / 255.0,
+                    fill.noise_color[2] as f32 / 255.0,
+                    fill.noise_color[3] as f32 / 255.0,
+                ];
+                let node_refs: Vec<(&crate::mesh::Mesh, &wgpu::BindGroup)> = nodes
+                    .iter()
+                    .map(|(m, bg)| (&**m, &**bg))
+                    .collect();
+                painter.render_fill_layer_to_views(
+                    device,
+                    queue,
+                    &view_refs,
+                    base,
+                    noise,
+                    fill.noise_scale,
+                    fill.projection_mode,
+                    &node_refs,
+                );
+            } else {
+                for stroke in &strokes.0 {
+                    painter.paint_stroke_udim_to_views(
+                        device,
+                        queue,
+                        &view_refs,
+                        stroke,
+                        num_udim_tiles,
+                    );
+                }
+            }
+        }
+
+        world.insert_resource(painter_res);
+
+        let mut compose_query = world.query::<(&LayerIndex, &LayerVisibility, &LayerOpacity, &LayerBlendMode)>();
+        let mut compose_layers: Vec<_> = compose_query.iter(world).collect();
+        compose_layers.sort_by_key(|(idx, _, _, _)| idx.0);
+
+        let active_layers_data: Vec<(f32, crate::painter::BlendMode, bool)> = compose_layers
+            .iter()
+            .map(|(_, vis, opacity, blend)| (opacity.0, blend.0, vis.0))
+            .collect();
+
+        let painter_res = world.get_resource::<PainterResource>().unwrap();
+        painter_res.0.compose_layers_ecs(device, queue, &active_layers_data);
+    }
+
+    pub fn compose_layers_only_ecs(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        let mut world = self.world_mut();
+        let mut compose_query = world.query::<(&LayerIndex, &LayerVisibility, &LayerOpacity, &LayerBlendMode)>();
+        let mut compose_layers: Vec<_> = compose_query.iter(world).collect();
+        compose_layers.sort_by_key(|(idx, _, _, _)| idx.0);
+
+        let active_layers_data: Vec<(f32, crate::painter::BlendMode, bool)> = compose_layers
+            .iter()
+            .map(|(_, vis, opacity, blend)| (opacity.0, blend.0, vis.0))
+            .collect();
+
+        let painter_res = world.get_resource::<PainterResource>().unwrap();
+        painter_res.0.compose_layers_ecs(device, queue, &active_layers_data);
+    }
+
+    pub fn get_layers_snapshot(&mut self) -> Vec<crate::painter::Layer> {
+        let mut world = self.world_mut();
+        let mut query = world.query::<(
+            &LayerIndex,
+            &LayerName,
+            &LayerOpacity,
+            &LayerVisibility,
+            &LayerBlendMode,
+            &LayerStrokes,
+            Option<&FillLayerProperties>,
+        )>();
+        let mut layers: Vec<_> = query
+            .iter(world)
+            .map(|(idx, name, opacity, vis, blend, strokes, fill)| {
+                let is_fill = fill.is_some();
+                let (fill_color, fill_noise_color, fill_noise_scale, fill_projection_mode) = if let Some(f) = fill {
+                    (f.color, f.noise_color, f.noise_scale, f.projection_mode)
+                } else {
+                    ([128, 128, 128, 255], [255, 255, 255, 255], 10.0, 0)
+                };
+                (
+                    idx.0,
+                    crate::painter::Layer {
+                        name: name.0.clone(),
+                        opacity: opacity.0,
+                        visible: vis.0,
+                        blend_mode: blend.0,
+                        is_fill,
+                        fill_color,
+                        fill_noise_color,
+                        fill_noise_scale,
+                        fill_projection_mode,
+                        strokes: strokes.0.clone(),
+                    }
+                )
+            })
+            .collect();
+        // Sort by index
+        layers.sort_by_key(|(idx, _)| *idx);
+        layers.into_iter().map(|(_, l)| l).collect()
+    }
+
+    pub fn restore_layers_snapshot(&mut self, layers: &[crate::painter::Layer], active_layer_idx: usize, device: &wgpu::Device) {
+        let mut world = self.world_mut();
+
+        // 1. Despawn all existing Layer entities
+        let old_entities: Vec<Entity> = world
+            .query_filtered::<Entity, With<LayerName>>()
+            .iter(world)
+            .collect();
+        for entity in old_entities {
+            world.despawn(entity);
+        }
+
+        // 2. Spawn new Layer entities
+        for (i, layer) in layers.iter().enumerate() {
+            let texture = create_layer_texture(device, 1024, 1024);
+            let mut entity = world.spawn((
+                LayerIndex(i),
+                LayerName(layer.name.clone()),
+                LayerOpacity(layer.opacity),
+                LayerVisibility(layer.visible),
+                LayerBlendMode(layer.blend_mode),
+                LayerStrokes(layer.strokes.clone()),
+                texture,
+            ));
+
+            if layer.is_fill {
+                entity.insert(FillLayerProperties {
+                    color: layer.fill_color,
+                    noise_color: layer.fill_noise_color,
+                    noise_scale: layer.fill_noise_scale,
+                    projection_mode: layer.fill_projection_mode,
+                });
+            }
+
+            if i == active_layer_idx {
+                entity.insert(ActiveLayer);
+            }
+        }
+    }
+
+    pub fn reproject_strokes_ecs(&mut self) {
+        let mut world = self.world_mut();
+
+        let mut triangles = Vec::new();
+        let mut mesh_query = world.query::<(&Transform, &MeshHandle)>();
+
+        for (transform, mesh_handle) in mesh_query.iter(world) {
+            let world_matrix = transform.to_matrix();
+            for primitive in &mesh_handle.0.primitives {
+                for chunk in primitive.indices.chunks_exact(3) {
+                    let i0 = chunk[0] as usize;
+                    let i1 = chunk[1] as usize;
+                    let i2 = chunk[2] as usize;
+
+                    let v0 = &primitive.vertices[i0];
+                    let v1 = &primitive.vertices[i1];
+                    let v2 = &primitive.vertices[i2];
+
+                    let p0 = world_matrix.transform_point3(glam::Vec3::from(v0.position));
+                    let p1 = world_matrix.transform_point3(glam::Vec3::from(v1.position));
+                    let p2 = world_matrix.transform_point3(glam::Vec3::from(v2.position));
+
+                    let uv0 = glam::Vec2::from(v0.tex_coords);
+                    let uv1 = glam::Vec2::from(v1.tex_coords);
+                    let uv2 = glam::Vec2::from(v2.tex_coords);
+
+                    let center = (p0 + p1 + p2) / 3.0;
+                    let bounds_min = p0.min(p1).min(p2);
+                    let bounds_max = p0.max(p1).max(p2);
+
+                    triangles.push(crate::painter::WorldTriangle {
+                        p0,
+                        p1,
+                        p2,
+                        uv0,
+                        uv1,
+                        uv2,
+                        center,
+                        bounds_min,
+                        bounds_max,
+                    });
+                }
+            }
+        }
+
+        if triangles.is_empty() {
+            let mut strokes_query = world.query::<&mut LayerStrokes>();
+            for mut strokes in strokes_query.iter_mut(world) {
+                for stroke in &mut strokes.0 {
+                    stroke.uv_points.clear();
+                    for _ in &stroke.points {
+                        stroke.uv_points.push(glam::Vec2::ZERO);
+                    }
+                }
+            }
+            return;
+        }
+
+        let bvh = crate::painter::BVHNode::build(triangles);
+
+        let mut strokes_query = world.query::<&mut LayerStrokes>();
+        for mut strokes in strokes_query.iter_mut(world) {
+            for stroke in &mut strokes.0 {
+                stroke.uv_points.clear();
+                for pt in &stroke.points {
+                    let mut closest_uv = glam::Vec2::ZERO;
+                    let mut min_dist_sq = f32::MAX;
+                    bvh.find_closest(*pt, &mut min_dist_sq, &mut closest_uv);
+                    stroke.uv_points.push(closest_uv);
+                }
+            }
+        }
     }
 
     /// Synchronize host-owned app state into ECS domain resource.
@@ -732,13 +1537,8 @@ impl Default for EcsRuntime {
 /// Systems module for ECS frame processing and event-driven runtime updates.
 pub mod systems {
     use super::events::*;
-    use super::{
-        DomainStateResource, ExtractedCameraData, ExtractedDocumentData, ExtractedLayerComposition,
-        HostStatePtr, MainWindowUiResource, PendingDomainHostOpsResource, PendingPrepareOpsResource,
-        PendingRenderOpsResource, PendingSurfaceOpsResource, PendingUiFrameOpsResource, RenderErrorResource,
-        SurfaceRegistryResource, UiWindowRegistryResource, UvWindowUiResource,
-    };
-    use bevy_ecs::system::{Res, ResMut};
+    use super::*;
+    use bevy_ecs::prelude::*;
 
     /// Phase 4.1: Consume resize events and produce pending surface ops.
     pub fn window_surface_system(
@@ -791,19 +1591,35 @@ pub mod systems {
         }
     }
 
-    /// Apply GPU prepare changes on host state.
+    /// Apply GPU prepare changes natively on the GPU.
     pub fn apply_prepare_gpu_system(
-        state_ptr: Res<HostStatePtr>,
+        camera: Res<CameraResource>,
+        settings: Res<ViewportSettingsResource>,
+        document: Option<Res<super::DocumentResource>>,
+        camera_gpu: Option<Res<super::CameraGpuResources>>,
+        gpu_ctx: Option<Res<super::GpuContextResource>>,
         mut pending_prepare_ops: ResMut<PendingPrepareOpsResource>,
     ) {
-        if state_ptr.0.is_null() {
+        let (Some(gpu), Some(gpu_res), Some(doc)) = (gpu_ctx, camera_gpu, document) else {
             return;
-        }
-        let state = unsafe { &mut *state_ptr.0 };
-
+        };
         let ops = std::mem::take(&mut *pending_prepare_ops);
         if ops.update_main_camera_uniform {
-            state.viewport.update_camera(&state.queue);
+            let mut camera_uniform = crate::viewport::CameraUniform::new();
+            camera_uniform.update_view_proj(
+                &camera,
+                settings.light_angle,
+                settings.light_intensity,
+                settings.ambient_strength,
+                settings.view_transform,
+                settings.exposure,
+                doc.document.num_udim_tiles,
+            );
+            gpu.queue.write_buffer(
+                &gpu_res.buffer,
+                0,
+                bytemuck::cast_slice(&[camera_uniform]),
+            );
         }
     }
 
@@ -1227,6 +2043,279 @@ pub mod systems {
         extracted_doc.current_mesh = app_state.document().current_mesh.clone();
         extracted_doc.num_udim_tiles = app_state.document().num_udim_tiles as usize;
         extracted_doc.num_paint_layers = app_state.document().layer_count;
+    }
+
+    pub fn camera_update_system(
+        mut viewport_events: bevy_ecs::event::EventReader<AppEvent>,
+        mut camera: ResMut<CameraResource>,
+        mut settings: ResMut<ViewportSettingsResource>,
+        gpu_ctx: Option<Res<GpuContextResource>>,
+        camera_gpu: Option<Res<CameraGpuResources>>,
+        document: Option<Res<DocumentResource>>,
+    ) {
+        let mut changed = false;
+        for event in viewport_events.read() {
+            if let AppEvent::Viewport(cmd) = event {
+                changed = true;
+                match cmd {
+                    ViewportCommandEvent::Orbit { dx, dy } => {
+                        camera.yaw -= (*dx as f64 * 0.005) as f32;
+                        camera.pitch = (camera.pitch + (*dy as f64 * 0.005) as f32).clamp(
+                            -std::f32::consts::FRAC_PI_2 + 0.05,
+                            std::f32::consts::FRAC_PI_2 - 0.05,
+                        );
+                    }
+                    ViewportCommandEvent::Pan { dx, dy } => {
+                        let eye = camera.get_eye();
+                        let forward = (camera.target - eye).normalize();
+                        let right = forward.cross(glam::Vec3::Y).normalize();
+                        let up = right.cross(forward).normalize();
+                        let speed = camera.distance * 0.0015;
+                        camera.target += right * (-*dx * speed) + up * (*dy * speed);
+                    }
+                    ViewportCommandEvent::Zoom { scroll } => {
+                        camera.distance = (camera.distance - *scroll * 0.25).clamp(1.0, 50.0);
+                    }
+                }
+            }
+        }
+
+        if changed {
+            if let (Some(gpu), Some(gpu_res), Some(doc)) = (gpu_ctx, camera_gpu, document) {
+                let mut camera_uniform = crate::viewport::CameraUniform::new();
+                camera_uniform.update_view_proj(
+                    &camera,
+                    settings.light_angle,
+                    settings.light_intensity,
+                    settings.ambient_strength,
+                    settings.view_transform,
+                    settings.exposure,
+                    doc.document.num_udim_tiles,
+                );
+                gpu.queue.write_buffer(
+                    &gpu_res.buffer,
+                    0,
+                    bytemuck::cast_slice(&[camera_uniform]),
+                );
+            }
+        }
+    }
+
+    pub fn brush_paint_system(
+        mut interaction: ResMut<InteractionStateResource>,
+        camera: Res<CameraResource>,
+        settings: Res<ViewportSettingsResource>,
+        domain: Res<DomainStateResource>,
+        prefs: Res<PreferencesResource>,
+        registry: Res<SurfaceRegistryResource>,
+        gpu_ctx: Option<Res<GpuContextResource>>,
+        painter_res: Option<ResMut<PainterResource>>,
+        document: Option<Res<DocumentResource>>,
+        mesh_query: Query<(&Transform, &MeshHandle, &Aabb)>,
+        mut active_layer_query: Query<
+            (
+                Entity,
+                &LayerTexture,
+                &mut LayerStrokes,
+            ),
+            (With<ActiveLayer>, Without<FillLayerProperties>),
+        >,
+        mut pending_render: ResMut<PendingRenderOpsResource>,
+    ) {
+        let app_state = &domain.0;
+        let is_painting = app_state.input().paint_button_down
+            && !app_state.input().orbit_modifier
+            && !app_state.input().alt;
+
+        if !is_painting {
+            interaction.last_hit_uv = None;
+            interaction.last_hit_pos = None;
+            return;
+        }
+
+        let Some(gpu) = gpu_ctx else { return; };
+        let Some(mut painter) = painter_res else { return; };
+        let Some(doc) = document else { return; };
+
+        let mouse_pos = glam::Vec2::new(
+            app_state.input().last_mouse_pos.x as f32,
+            app_state.input().last_mouse_pos.y as f32,
+        );
+        let screen_size = glam::Vec2::new(
+            registry.main_surface_size.0 as f32,
+            registry.main_surface_size.1 as f32,
+        );
+
+        let eye = camera.get_eye();
+        let view = glam::Mat4::look_at_rh(eye, camera.target, glam::Vec3::Y);
+        let proj = glam::Mat4::perspective_rh(camera.fovy, camera.aspect, camera.znear, camera.zfar);
+        let ray = crate::raycast::Ray::from_screen(mouse_pos, screen_size, view, proj);
+
+        let is_eraser = app_state.tool().active_tool == crate::app::types::Tool::Eraser;
+
+        // Apply tablet pressure to brush parameters
+        let pressure = if app_state.input().has_tablet_input {
+            let min_start = prefs.0.pressure_curve_min_start;
+            let max_at = prefs.0.pressure_curve_max_at;
+            let p = app_state.input().pen_pressure;
+            if p <= min_start {
+                0.0
+            } else if p >= max_at {
+                1.0
+            } else {
+                (p - min_start) / (max_at - min_start)
+            }
+        } else {
+            1.0
+        };
+        let effective_size = app_state.canvas().brush_size * (0.2 + 0.8 * pressure);
+        let effective_opacity = app_state.canvas().brush_opacity * pressure;
+        let mut brush_rgba = app_state.canvas().brush_color;
+        brush_rgba[3] = (effective_opacity * 255.0) as u8;
+
+        // Find intersection
+        let mut closest_hit: Option<crate::raycast::RaycastHit> = None;
+        for (transform, mesh_handle, _aabb) in mesh_query.iter() {
+            let world_matrix = transform.to_matrix();
+            for primitive in &mesh_handle.0.primitives {
+                if let Some(hit) = crate::raycast::intersect_primitive(&ray, primitive, world_matrix) {
+                    if let Some(ref current) = closest_hit {
+                        if hit.distance < current.distance {
+                            closest_hit = Some(hit);
+                        }
+                    } else {
+                        closest_hit = Some(hit);
+                    }
+                }
+            }
+        }
+
+        if let Some(hit) = closest_hit {
+            if let Ok((_entity, layer_texture, mut strokes)) = active_layer_query.get_single_mut() {
+                if interaction.stroke_in_progress.is_none() {
+                    interaction.stroke_in_progress = Some(crate::painter::PaintStroke {
+                        points: Vec::new(),
+                        uv_points: Vec::new(),
+                        point_radii: Vec::new(),
+                        point_alphas: Vec::new(),
+                        color: brush_rgba,
+                        radius: effective_size,
+                        hardness: app_state.canvas().brush_hardness,
+                        is_eraser,
+                    });
+                }
+                if let Some(ref mut stroke) = interaction.stroke_in_progress {
+                    stroke.points.push(hit.point);
+                    stroke.uv_points.push(hit.uv);
+                    stroke.point_radii.push(effective_size);
+                    stroke.point_alphas.push(brush_rgba[3]);
+                }
+
+                let view_refs: Vec<&wgpu::TextureView> = layer_texture.views.iter().map(|v| &**v).collect();
+
+                if let Some(last_uv) = interaction.last_hit_uv {
+                    painter.0.paint_stroke_to_views(
+                        &gpu.device,
+                        &gpu.queue,
+                        &view_refs,
+                        last_uv,
+                        hit.uv,
+                        interaction.last_hit_pos,
+                        Some(hit.point),
+                        brush_rgba,
+                        effective_size,
+                        app_state.canvas().brush_hardness,
+                        is_eraser,
+                        doc.document.num_udim_tiles,
+                    );
+                } else {
+                    painter.0.paint_stamp_to_views(
+                        &gpu.device,
+                        &gpu.queue,
+                        &view_refs,
+                        hit.uv,
+                        Some(hit.point),
+                        brush_rgba,
+                        effective_size,
+                        app_state.canvas().brush_hardness,
+                        is_eraser,
+                        doc.document.num_udim_tiles,
+                    );
+                }
+
+                interaction.last_hit_uv = Some(hit.uv);
+                interaction.last_hit_pos = Some(hit.point);
+                pending_render.render_main_surface = true;
+                pending_render.render_paint_composite_pass = true;
+            }
+        } else {
+            interaction.last_hit_uv = None;
+            interaction.last_hit_pos = None;
+        }
+    }
+
+    pub fn layer_compositor_system(
+        gpu_ctx: Option<Res<GpuContextResource>>,
+        painter_res: Option<ResMut<PainterResource>>,
+        layers_query: Query<(
+            &LayerIndex,
+            &LayerVisibility,
+            &LayerOpacity,
+            &LayerBlendMode,
+            &LayerTexture,
+        )>,
+    ) {
+        let Some(gpu) = gpu_ctx else { return; };
+        let Some(mut painter) = painter_res else { return; };
+
+        // 1. Sort visible layers
+        let mut layers: Vec<_> = layers_query.iter().collect();
+        layers.sort_by_key(|(idx, _, _, _, _)| idx.0);
+
+        // 2. Copy active layer textures into painter's layer_array_texture slots
+        let mut encoder = gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("ECS Layer Copy Encoder"),
+        });
+
+        let mut active_layers_data = Vec::new();
+
+        for (sorted_idx, (_index, visible, opacity, blend, texture_comp)) in layers.iter().enumerate() {
+            if sorted_idx >= crate::painter::MAX_LAYERS {
+                break;
+            }
+            active_layers_data.push((opacity.0, blend.0, visible.0));
+
+            // Copy texture tiles
+            for t in 0..crate::painter::MAX_UDIMS {
+                encoder.copy_texture_to_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &texture_comp.texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d { x: 0, y: 0, z: t as u32 },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &painter.0.layer_array_texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d {
+                            x: 0,
+                            y: 0,
+                            z: (sorted_idx * crate::painter::MAX_UDIMS + t) as u32,
+                        },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::Extent3d {
+                        width: painter.0.width,
+                        height: painter.0.height,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
+        }
+        gpu.queue.submit(std::iter::once(encoder.finish()));
+
+        // 3. Run composition render pipeline on the GPU
+        painter.0.compose_layers_ecs(&gpu.device, &gpu.queue, &active_layers_data);
     }
 }
 

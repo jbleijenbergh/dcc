@@ -2,6 +2,7 @@ use super::ecs;
 use super::user_preferences;
 use super::{State, Tool};
 use crate::painter::BlendMode;
+use bevy_ecs::query::With;
 
 impl State {
     #[allow(deprecated)]
@@ -181,11 +182,13 @@ impl State {
                     pending_ui_actions.push(ecs::events::UiActionEvent::SwitchMesh(selected_mesh));
                 }
 
-                if self.viewport.document.scenes.len() > 1 {
+                let doc_res = self.ecs_runtime.world().get_resource::<ecs::DocumentResource>().unwrap();
+                let doc = &doc_res.document;
+                if doc.scenes.len() > 1 {
                     ui.separator();
                     ui.label("Scene:");
-                    let active_scene_idx = self.viewport.document.active_scene_idx;
-                    let scene_name = self.viewport.document.scenes[active_scene_idx]
+                    let active_scene_idx = doc.active_scene_idx;
+                    let scene_name = doc.scenes[active_scene_idx]
                         .name
                         .clone()
                         .unwrap_or_else(|| format!("Scene {}", active_scene_idx));
@@ -193,7 +196,7 @@ impl State {
                     egui::ComboBox::from_id_salt("scene_select")
                         .selected_text(&scene_name)
                         .show_ui(ui, |ui| {
-                            for (idx, _scene) in self.viewport.document.scenes.iter().enumerate() {
+                            for (idx, _scene) in doc.scenes.iter().enumerate() {
                                 let name = _scene
                                     .name
                                     .clone()
@@ -354,16 +357,48 @@ impl State {
 
                     ui.separator();
 
-                    let layer_count = self.painter.layers.len();
+                    let layers_list = {
+                        let mut query = self.ecs_runtime.world_mut().query::<(
+                            &ecs::LayerIndex,
+                            &ecs::LayerName,
+                            &ecs::LayerOpacity,
+                            &ecs::LayerVisibility,
+                            &ecs::LayerBlendMode,
+                            Option<&ecs::FillLayerProperties>,
+                        )>();
+                        let mut list: Vec<_> = query
+                            .iter(self.ecs_runtime.world_mut())
+                            .map(|(idx, name, opacity, vis, blend, fill)| {
+                                (
+                                    idx.0,
+                                    name.0.clone(),
+                                    opacity.0,
+                                    vis.0,
+                                    blend.0,
+                                    fill.is_some(),
+                                    fill.map(|f| (f.color, f.noise_color, f.noise_scale, f.projection_mode)),
+                                )
+                            })
+                            .collect();
+                        list.sort_by_key(|(idx, _, _, _, _, _, _)| *idx);
+                        list
+                    };
+
+                    let active_layer_idx = {
+                        let mut active_query = self.ecs_runtime.world_mut().query_filtered::<&ecs::LayerIndex, With<ecs::ActiveLayer>>();
+                        active_query.iter(self.ecs_runtime.world_mut()).next().map(|idx| idx.0).unwrap_or(0)
+                    };
+
+                    let layer_count = layers_list.len();
 
                     for idx in (0..layer_count).rev() {
-                        let is_active = self.painter.active_layer_idx == idx;
+                        let is_active = active_layer_idx == idx;
                         ui.horizontal(|ui| {
-                            if ui.selectable_label(is_active, &self.painter.layers[idx].name).clicked() {
+                            if ui.selectable_label(is_active, &layers_list[idx].1).clicked() {
                                 pending_ui_actions.push(ecs::events::UiActionEvent::SelectLayer(idx));
                             }
 
-                            let mut visible = self.painter.layers[idx].visible;
+                            let mut visible = layers_list[idx].3;
                             if ui.checkbox(&mut visible, "").changed() {
                                 pending_ui_actions.push(ecs::events::UiActionEvent::SetLayerVisible { idx, visible });
                             }
@@ -376,11 +411,11 @@ impl State {
                         });
 
                         if is_active {
-                            let is_fill = self.painter.layers[idx].is_fill;
+                            let is_fill = layers_list[idx].5;
                             ui.indent("layer_props", |ui| {
                                 ui.horizontal(|ui| {
                                     ui.label("Blend:");
-                                    let mut blend = self.painter.layers[idx].blend_mode;
+                                    let mut blend = layers_list[idx].4;
                                     egui::ComboBox::from_id_salt(format!("blend_{}", idx))
                                         .selected_text(blend.to_str())
                                         .show_ui(ui, |ui| {
@@ -398,7 +433,7 @@ impl State {
 
                                 ui.horizontal(|ui| {
                                     ui.label("Opacity:");
-                                    let mut op = self.painter.layers[idx].opacity;
+                                    let mut op = layers_list[idx].2;
                                     let response = ui.add(egui::Slider::new(&mut op, 0.0..=1.0));
                                     if response.changed() {
                                         pending_ui_actions.push(ecs::events::UiActionEvent::SetLayerOpacity {
@@ -413,13 +448,15 @@ impl State {
                                     ui.separator();
                                     ui.label(egui::RichText::new("Fill Layer Settings").strong());
 
+                                    let fill_props = layers_list[idx].6.unwrap();
                                     ui.horizontal(|ui| {
                                         ui.label("Base Color:");
+                                        let fill_color = fill_props.0;
                                         let mut c = [
-                                            self.painter.layers[idx].fill_color[0] as f32 / 255.0,
-                                            self.painter.layers[idx].fill_color[1] as f32 / 255.0,
-                                            self.painter.layers[idx].fill_color[2] as f32 / 255.0,
-                                            self.painter.layers[idx].fill_color[3] as f32 / 255.0,
+                                            fill_color[0] as f32 / 255.0,
+                                            fill_color[1] as f32 / 255.0,
+                                            fill_color[2] as f32 / 255.0,
+                                            fill_color[3] as f32 / 255.0,
                                         ];
                                         let response = ui.color_edit_button_rgba_unmultiplied(&mut c);
                                         if response.changed() {
@@ -437,11 +474,12 @@ impl State {
 
                                     ui.horizontal(|ui| {
                                         ui.label("Noise Color:");
+                                        let fill_noise_color = fill_props.1;
                                         let mut c = [
-                                            self.painter.layers[idx].fill_noise_color[0] as f32 / 255.0,
-                                            self.painter.layers[idx].fill_noise_color[1] as f32 / 255.0,
-                                            self.painter.layers[idx].fill_noise_color[2] as f32 / 255.0,
-                                            self.painter.layers[idx].fill_noise_color[3] as f32 / 255.0,
+                                            fill_noise_color[0] as f32 / 255.0,
+                                            fill_noise_color[1] as f32 / 255.0,
+                                            fill_noise_color[2] as f32 / 255.0,
+                                            fill_noise_color[3] as f32 / 255.0,
                                         ];
                                         let response = ui.color_edit_button_rgba_unmultiplied(&mut c);
                                         if response.changed() {
@@ -459,7 +497,7 @@ impl State {
 
                                     ui.horizontal(|ui| {
                                         ui.label("Noise Scale:");
-                                        let mut scale = self.painter.layers[idx].fill_noise_scale;
+                                        let mut scale = fill_props.2;
                                         let response = ui.add(egui::Slider::new(&mut scale, 0.5..=50.0));
                                         if response.changed() {
                                             pending_ui_actions.push(ecs::events::UiActionEvent::SetFillNoiseScale {
@@ -472,7 +510,7 @@ impl State {
 
                                     ui.horizontal(|ui| {
                                         ui.label("Projection:");
-                                        let mut mode = self.painter.layers[idx].fill_projection_mode;
+                                        let mut mode = fill_props.3;
                                         let prev_mode = mode;
                                         egui::ComboBox::from_id_salt(format!("proj_{}", idx))
                                             .selected_text(if mode == 1 { "Triplanar" } else { "UV" })
@@ -586,7 +624,8 @@ impl State {
             egui::CollapsingHeader::new("Model Hierarchy")
                 .default_open(true)
                 .show(ui, |ui| {
-                    let doc = &self.viewport.document;
+                    let doc_res = self.ecs_runtime.world().get_resource::<ecs::DocumentResource>().unwrap();
+                    let doc = &doc_res.document;
                     if doc.scenes.is_empty() {
                         ui.label("No scene loaded");
                     } else {
@@ -603,7 +642,8 @@ impl State {
             egui::CollapsingHeader::new("Materials")
                 .default_open(true)
                 .show(ui, |ui| {
-                    let doc = &self.viewport.document;
+                    let doc_res = self.ecs_runtime.world().get_resource::<ecs::DocumentResource>().unwrap();
+                    let doc = &doc_res.document;
                     if doc.materials.is_empty() {
                         ui.label(egui::RichText::new("No materials in model").weak().italics());
                     } else {
@@ -631,21 +671,30 @@ impl State {
             egui::CollapsingHeader::new("Light Settings")
                 .default_open(true)
                 .show(ui, |ui| {
+                    let mut settings = *self.ecs_runtime.world().get_resource::<ecs::ViewportSettingsResource>().unwrap();
+                    let mut changed = false;
                     ui.horizontal(|ui| {
                         ui.label("Light Angle:");
-                        ui.add(egui::Slider::new(&mut self.viewport.light_angle, 0.0..=std::f32::consts::PI * 2.0));
+                        if ui.add(egui::Slider::new(&mut settings.light_angle, 0.0..=std::f32::consts::PI * 2.0)).changed() {
+                            changed = true;
+                        }
                     });
                     ui.horizontal(|ui| {
                         ui.label("Light Intensity:");
-                        ui.add(egui::Slider::new(&mut self.viewport.light_intensity, 0.0..=5.0));
+                        if ui.add(egui::Slider::new(&mut settings.light_intensity, 0.0..=5.0)).changed() {
+                            changed = true;
+                        }
                     });
                     ui.horizontal(|ui| {
                         ui.label("Ambient Strength:");
-                        ui.add(egui::Slider::new(&mut self.viewport.ambient_strength, 0.0..=1.0));
+                        if ui.add(egui::Slider::new(&mut settings.ambient_strength, 0.0..=1.0)).changed() {
+                            changed = true;
+                        }
                     });
                     ui.horizontal(|ui| {
                         ui.label("View Transform:");
-                        let current_transform = self.viewport.view_transform;
+                        let mut current_transform = settings.view_transform;
+                        let mut vt_changed = false;
                         egui::ComboBox::from_id_salt("view_transform_select")
                             .selected_text(match current_transform {
                                 crate::viewport::ViewTransform::Standard => "Standard Linear",
@@ -653,15 +702,33 @@ impl State {
                                 crate::viewport::ViewTransform::ACES => "ACES",
                             })
                             .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut self.viewport.view_transform, crate::viewport::ViewTransform::Standard, "Standard Linear");
-                                ui.selectable_value(&mut self.viewport.view_transform, crate::viewport::ViewTransform::AgX, "AgX");
-                                ui.selectable_value(&mut self.viewport.view_transform, crate::viewport::ViewTransform::ACES, "ACES");
+                                if ui.selectable_value(&mut current_transform, crate::viewport::ViewTransform::Standard, "Standard Linear").clicked() {
+                                    vt_changed = true;
+                                }
+                                if ui.selectable_value(&mut current_transform, crate::viewport::ViewTransform::AgX, "AgX").clicked() {
+                                    vt_changed = true;
+                                }
+                                if ui.selectable_value(&mut current_transform, crate::viewport::ViewTransform::ACES, "ACES").clicked() {
+                                    vt_changed = true;
+                                }
                             });
+                        if vt_changed {
+                            settings.view_transform = current_transform;
+                            changed = true;
+                        }
                     });
                     ui.horizontal(|ui| {
                         ui.label("Exposure:");
-                        ui.add(egui::Slider::new(&mut self.viewport.exposure, 0.1..=5.0));
+                        if ui.add(egui::Slider::new(&mut settings.exposure, 0.1..=5.0)).changed() {
+                            changed = true;
+                        }
                     });
+                    if changed {
+                        *self.ecs_runtime.world_mut().get_resource_mut::<ecs::ViewportSettingsResource>().unwrap() = settings;
+                        if let Some(mut prepare_ops) = self.ecs_runtime.world_mut().get_resource_mut::<ecs::PendingPrepareOpsResource>() {
+                            prepare_ops.update_main_camera_uniform = true;
+                        }
+                    }
                 });
 
             ui.separator();
@@ -993,9 +1060,30 @@ impl State {
                 "UV UI frame was not begun by ECS lifecycle"
             );
 
-            let num_tiles = self.viewport.document.num_udim_tiles.max(1) as usize;
+            let num_tiles = {
+                let doc_res = self.ecs_runtime.world().get_resource::<ecs::DocumentResource>().unwrap();
+                doc_res.document.num_udim_tiles.max(1) as usize
+            };
             let show_uv_wireframe = self.app_state.ui().show_uv_wireframe;
-            let active_nodes = self.viewport.document.get_active_nodes();
+
+            let layers_list = {
+                let mut query = self.ecs_runtime.world_mut().query::<(&ecs::LayerIndex, &ecs::LayerName)>();
+                let mut list: Vec<_> = query
+                    .iter(self.ecs_runtime.world_mut())
+                    .map(|(idx, name)| (idx.0, name.0.clone()))
+                    .collect();
+                list.sort_by_key(|(idx, _)| *idx);
+                list
+            };
+
+            let meshes = {
+                let mut query = self.ecs_runtime.world_mut().query::<&ecs::MeshHandle>();
+                let list: Vec<_> = query
+                    .iter(self.ecs_runtime.world_mut())
+                    .map(|h| h.0.clone())
+                    .collect();
+                list
+            };
 
             #[allow(deprecated)]
             egui::CentralPanel::default().show(&viewer.egui_ctx, |ui| {
@@ -1008,8 +1096,8 @@ impl State {
                         "Composed Result".to_string()
                     } else {
                         let idx = current_source - 1;
-                        if idx < self.painter.layers.len() {
-                            format!("Layer: {}", self.painter.layers[idx].name)
+                        if idx < layers_list.len() {
+                            format!("Layer: {}", layers_list[idx].1)
                         } else {
                             "Unknown Layer".to_string()
                         }
@@ -1019,11 +1107,11 @@ impl State {
                         .selected_text(&source_name)
                         .show_ui(ui, |ui| {
                             ui.selectable_value(&mut selected_source, 0, "Composed Result");
-                            for idx in 0..self.painter.layers.len() {
+                            for idx in 0..layers_list.len() {
                                 ui.selectable_value(
                                     &mut selected_source,
                                     idx + 1,
-                                    format!("Layer: {}", self.painter.layers[idx].name),
+                                    format!("Layer: {}", layers_list[idx].1),
                                 );
                             }
                         });
@@ -1097,9 +1185,8 @@ impl State {
                                                 255, 255, 255, 120,
                                             ),
                                         ); // semi-transparent white
-                                        for (node, _) in &active_nodes {
-                                            if let Some(ref mesh) = node.mesh {
-                                                for primitive in &mesh.primitives {
+                                        for mesh in &meshes {
+                                            for primitive in &mesh.primitives {
                                                     for chunk in primitive.indices.chunks_exact(3) {
                                                         let i0 = chunk[0] as usize;
                                                         let i1 = chunk[1] as usize;
@@ -1161,7 +1248,6 @@ impl State {
                                                                     .line_segment([p2, p0], stroke);
                                                             }
                                                         }
-                                                    }
                                                 }
                                             }
                                         }

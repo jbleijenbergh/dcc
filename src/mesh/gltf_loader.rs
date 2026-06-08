@@ -537,7 +537,7 @@ pub fn load_gltf(
             None
         };
 
-        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let uniform_buffer = std::sync::Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(&format!(
                 "{} Node Uniform Buffer",
                 name.as_deref().unwrap_or("GLTF")
@@ -545,9 +545,9 @@ pub fn load_gltf(
             size: 128,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
-        });
+        }));
 
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let bind_group = std::sync::Arc::new(device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
@@ -557,7 +557,7 @@ pub fn load_gltf(
                 "{} Node Bind Group",
                 name.as_deref().unwrap_or("GLTF")
             )),
-        });
+        }));
 
         let children = gltf_node.children().map(|c| c.index()).collect();
 

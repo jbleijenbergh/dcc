@@ -75,6 +75,9 @@ impl SurfaceHostCoordinator {
                 depth_view,
                 viewport,
             );
+            if let Some(mut camera) = ecs_runtime.world_mut().get_resource_mut::<ecs::CameraResource>() {
+                camera.aspect = width as f32 / height as f32;
+            }
         }
         if let Some((width, height)) = surface_ops.uv_resize {
             self.resize_uv_surface(width, height, uv_viewer, device, ecs_runtime);
@@ -102,8 +105,6 @@ impl SurfaceHostCoordinator {
                 crate::viewport::create_depth_texture(device, config, "depth_texture");
             *depth_texture = new_depth_texture;
             *depth_view = new_depth_view;
-
-            viewport.camera.aspect = new_size.width as f32 / new_size.height as f32;
 
             log::info!("Resized to: {}x{}", new_size.width, new_size.height);
         }
@@ -246,17 +247,16 @@ impl State {
 
         let texture_bind_group_layout = crate::painter::create_bind_group_layout(&device);
 
-        let mut painter = crate::painter::Painter::new(&device, &texture_bind_group_layout);
-        painter.clear_all_layers(&device, &queue);
+        let painter = crate::painter::Painter::new(&device, &texture_bind_group_layout);
 
         let aspect = size.width as f32 / size.height as f32;
-        let viewport = crate::viewport::Viewport::new(
-            &device,
-            surface_format,
-            aspect,
-            &texture_bind_group_layout,
-        );
-        viewport.update_node_transforms(&queue);
+        let (viewport, camera_res, camera_buffer, camera_bind_group, document) =
+            crate::viewport::Viewport::new(
+                &device,
+                surface_format,
+                aspect,
+                &texture_bind_group_layout,
+            );
 
         let (depth_texture, depth_view) =
             crate::viewport::create_depth_texture(&device, &config, "depth_texture");
@@ -286,17 +286,28 @@ impl State {
         );
 
         let (preferences, preferences_path) = UserPreferences::load_or_default();
-        let initial_layer_count = painter.layers.len();
-        let initial_num_udims = viewport.document.num_udim_tiles;
 
         let mut ecs_runtime = ecs::EcsRuntime::new();
+        ecs_runtime.world_mut().insert_resource(ecs::PainterResource(painter));
+        ecs_runtime.register_document(document);
+        ecs_runtime.init_default_layer(&device);
+        ecs_runtime.world_mut().insert_resource(camera_res);
+        ecs_runtime.world_mut().insert_resource(ecs::CameraGpuResources {
+            buffer: camera_buffer,
+            bind_group: camera_bind_group,
+        });
+
+        viewport.update_node_transforms(ecs_runtime.world_mut(), &queue);
+
+        let initial_layer_count = 1;
+        let initial_num_udims = ecs_runtime.world().get_resource::<ecs::DocumentResource>().unwrap().document.num_udim_tiles;
 
         let app_state = {
             let mut state = app_state::AppState::new();
             state.document_mut().active_layer_idx = 0;
             state.document_mut().layer_count = initial_layer_count;
             state.document_mut().current_mesh = "Sphere".to_string();
-            state.document_mut().num_udim_tiles = initial_num_udims;
+            state.document_mut().num_udim_tiles = initial_num_udims as u32;
             state.canvas_mut().brush_size = 25.0;
             state.canvas_mut().brush_color = [220, 50, 50, 255];
             state.canvas_mut().brush_hardness = 0.5;
@@ -333,7 +344,6 @@ impl State {
             queue,
             size,
             viewport,
-            painter,
             main_ui: MainUiRuntime::new(egui_ctx, egui_state, egui_renderer),
             instance,
             adapter,
@@ -378,6 +388,9 @@ impl State {
             &mut main_ctx.depth_view,
             &mut self.viewport,
         );
+        if let Some(mut camera) = self.ecs_runtime.world_mut().get_resource_mut::<ecs::CameraResource>() {
+            camera.aspect = new_size.width as f32 / new_size.height as f32;
+        }
     }
 
     pub fn surface_format(&self) -> wgpu::TextureFormat {
