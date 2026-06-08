@@ -580,6 +580,21 @@ impl State {
         self.app_state.history_mut().redo_len = self.app_state.history().redo_stack.len();
 
         self.app_state.input_mut().pan_modifier = self.app_state.input().alt;
+
+        // Sync camera data
+        let camera_mut = self.app_state.camera_mut();
+        camera_mut.eye = self.viewport.camera.get_eye();
+        camera_mut.target = self.viewport.camera.target;
+        camera_mut.yaw = self.viewport.camera.yaw;
+        camera_mut.pitch = self.viewport.camera.pitch;
+        camera_mut.distance = self.viewport.camera.distance;
+        camera_mut.fov = self.viewport.camera.fovy;
+        camera_mut.aspect = self.viewport.camera.aspect;
+
+        // Sync layer composition data
+        let composition_mut = self.app_state.layer_composition_mut();
+        composition_mut.visibilities = self.painter.layers.iter().map(|l| l.visible).collect();
+        composition_mut.opacities = self.painter.layers.iter().map(|l| l.opacity).collect();
     }
 
     /// Emit an ECS event into the runtime's event queue.
@@ -865,12 +880,7 @@ impl State {
 
     #[allow(deprecated)]
     pub fn render(&mut self) -> Result<(), SurfaceError> {
-        if !self.main_ui.frame_begun {
-            // Fallback path keeps behavior stable while ECS UI lifecycle integration is staged.
-            let egui_input = self.main_ui.egui_state.take_egui_input(&*self.window);
-            self.main_ui.egui_ctx.begin_pass(egui_input);
-            self.main_ui.frame_begun = true;
-        }
+        debug_assert!(self.main_ui.frame_begun, "Main UI frame was not begun by ECS lifecycle");
 
         let mut close_error = false;
         let mut dismiss_error_requested = false;
@@ -1871,12 +1881,7 @@ impl State {
                 None => return Ok(()),
             };
 
-            if !self.uv_ui.frame_begun {
-                // Fallback path keeps behavior stable while ECS UI lifecycle integration is staged.
-                let egui_input = viewer.egui_state.take_egui_input(&*viewer.window);
-                viewer.egui_ctx.begin_pass(egui_input);
-                self.uv_ui.frame_begun = true;
-            }
+            debug_assert!(self.uv_ui.frame_begun, "UV UI frame was not begun by ECS lifecycle");
 
             let num_tiles = self.viewport.document.num_udim_tiles.max(1) as usize;
             let show_uv_wireframe = self.app_state.ui().show_uv_wireframe;
@@ -2304,7 +2309,14 @@ mod tests {
 
     #[test]
     fn test_domain_flush_applies_ui_action_event() {
-        let event_loop = match winit::event_loop::EventLoop::new() {
+        #[cfg(target_os = "windows")]
+        use winit::platform::windows::EventLoopBuilderExtWindows;
+
+        let mut builder = winit::event_loop::EventLoop::builder();
+        #[cfg(target_os = "windows")]
+        builder.with_any_thread(true);
+
+        let event_loop = match builder.build() {
             Ok(loop_handle) => loop_handle,
             Err(_) => {
                 eprintln!("Skipping test_domain_flush_applies_ui_action_event: no event loop");

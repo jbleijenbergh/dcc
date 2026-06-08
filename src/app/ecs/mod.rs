@@ -960,14 +960,18 @@ pub mod systems {
 
     /// Phase 3.2: Extract camera state for read-only render access.
     /// Runs in ExtractRenderData phase; reads DomainStateResource, writes ExtractedCameraData.
-    /// (Stub: full viewport data will be added when viewport moves to ECS resources)
     pub fn extract_camera_system(
-        _domain: Res<DomainStateResource>,
+        domain: Res<DomainStateResource>,
         mut extracted_camera: ResMut<ExtractedCameraData>,
     ) {
-        // For now, just keep the extracted data as-is.
-        // In Phase 4, viewport will be registered as an ECS resource.
-        *extracted_camera = ExtractedCameraData::default();
+        let camera = domain.0.camera();
+        extracted_camera.eye = camera.eye;
+        extracted_camera.target = camera.target;
+        extracted_camera.yaw = camera.yaw;
+        extracted_camera.pitch = camera.pitch;
+        extracted_camera.distance = camera.distance;
+        extracted_camera.fov = camera.fov;
+        extracted_camera.aspect = camera.aspect;
     }
 
     /// Phase 3.2: Extract layer composition for read-only render access.
@@ -981,10 +985,8 @@ pub mod systems {
         
         extracted_layers.layer_count = layer_count;
         extracted_layers.active_layer_idx = app_state.document().active_layer_idx;
-        
-        // Populate per-layer visibility and opacity (stub for now)
-        extracted_layers.layer_visibility = vec![true; layer_count];
-        extracted_layers.layer_opacities = vec![1.0; layer_count];
+        extracted_layers.layer_visibility = app_state.layer_composition().visibilities.clone();
+        extracted_layers.layer_opacities = app_state.layer_composition().opacities.clone();
     }
 
     /// Phase 3.2: Extract document metadata for read-only render access.

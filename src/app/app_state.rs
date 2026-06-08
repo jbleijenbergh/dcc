@@ -20,6 +20,10 @@ pub struct AppState {
     resources: ResourceState,
     #[getset(get = "pub")]
     input: InputSnapshot,
+    #[getset(get = "pub")]
+    camera: CameraState,
+    #[getset(get = "pub")]
+    layer_composition: LayerCompositionState,
 }
 
 impl AppState {
@@ -59,6 +63,8 @@ impl AppState {
                 has_error: false,
             },
             input: InputSnapshot::default(),
+            camera: CameraState::default(),
+            layer_composition: LayerCompositionState::default(),
         }
     }
 
@@ -82,6 +88,12 @@ impl AppState {
     }
     pub(crate) fn input_mut(&mut self) -> &mut InputSnapshot {
         &mut self.input
+    }
+    pub(crate) fn camera_mut(&mut self) -> &mut CameraState {
+        &mut self.camera
+    }
+    pub(crate) fn layer_composition_mut(&mut self) -> &mut LayerCompositionState {
+        &mut self.layer_composition
     }
 }
 
@@ -192,4 +204,30 @@ pub struct InputSnapshot {
     pub touchpad_pressure_stage: i64,
     #[getset(get, get_mut)]
     pub last_mouse_pos: PhysicalPosition<f64>,
+}
+
+#[derive(Clone, Debug, Getters, Default)]
+pub struct CameraState {
+    #[getset(get, get_mut)]
+    pub eye: glam::Vec3,
+    #[getset(get, get_mut)]
+    pub target: glam::Vec3,
+    #[getset(get, get_mut)]
+    pub yaw: f32,
+    #[getset(get, get_mut)]
+    pub pitch: f32,
+    #[getset(get, get_mut)]
+    pub distance: f32,
+    #[getset(get, get_mut)]
+    pub fov: f32,
+    #[getset(get, get_mut)]
+    pub aspect: f32,
+}
+
+#[derive(Clone, Debug, Getters, Default)]
+pub struct LayerCompositionState {
+    #[getset(get, get_mut)]
+    pub visibilities: Vec<bool>,
+    #[getset(get, get_mut)]
+    pub opacities: Vec<f32>,
 }
