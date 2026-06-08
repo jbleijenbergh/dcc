@@ -3,6 +3,7 @@ mod app_state;
 mod ecs;
 pub(crate) mod input;
 mod input_editor;
+mod render;
 mod surface;
 mod tools;
 mod types;

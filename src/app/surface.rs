@@ -409,7 +409,8 @@ impl State {
             .should_render_main_surface(&render_ops);
 
         if should_render_main {
-            if let Err(err) = self.render() {
+            let (textures_delta, paint_jobs) = self.draw_main_ui();
+            if let Err(err) = self.render_main_surface(textures_delta, paint_jobs) {
                 self.render_host.handle_render_error(
                     &mut self.ecs_runtime,
                     ecs::events::RenderSurfaceKind::Main,
@@ -418,12 +419,14 @@ impl State {
             }
         }
         if self.render_scheduler.should_render_uv_surface(&render_ops) {
-            if let Err(err) = self.render_uv_viewer() {
-                self.render_host.handle_render_error(
-                    &mut self.ecs_runtime,
-                    ecs::events::RenderSurfaceKind::Uv,
-                    err,
-                )?;
+            if let Some((textures_delta, paint_jobs)) = self.draw_uv_ui() {
+                if let Err(err) = self.render_uv_surface(textures_delta, paint_jobs) {
+                    self.render_host.handle_render_error(
+                        &mut self.ecs_runtime,
+                        ecs::events::RenderSurfaceKind::Uv,
+                        err,
+                    )?;
+                }
             }
         }
         Ok(())

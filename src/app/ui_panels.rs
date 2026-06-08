@@ -1,11 +1,11 @@
 use super::ecs;
 use super::user_preferences;
-use super::{State, SurfaceError, Tool};
+use super::{State, Tool};
 use crate::painter::BlendMode;
 
 impl State {
     #[allow(deprecated)]
-    pub fn render(&mut self) -> Result<(), SurfaceError> {
+    pub fn draw_main_ui(&mut self) -> (egui::TexturesDelta, Vec<egui::ClippedPrimitive>) {
         debug_assert!(
             self.main_ui.frame_begun,
             "Main UI frame was not begun by ECS lifecycle"
@@ -972,99 +972,15 @@ impl State {
             .egui_ctx
             .tessellate(egui_output.shapes, egui_output.pixels_per_point);
 
-        for (id, image_delta) in &egui_output.textures_delta.set {
-            self.main_ui
-                .egui_renderer
-                .update_texture(&self.device, &self.queue, *id, image_delta);
-        }
-
-        let screen_descriptor = egui_wgpu::ScreenDescriptor {
-            size_in_pixels: [self.size.width, self.size.height],
-            pixels_per_point: self.window.scale_factor() as f32,
-        };
-
-        let surface_texture = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(t) => t,
-            wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
-            wgpu::CurrentSurfaceTexture::Timeout => return Err(SurfaceError::Timeout),
-            wgpu::CurrentSurfaceTexture::Outdated => return Err(SurfaceError::Outdated),
-            wgpu::CurrentSurfaceTexture::Lost => return Err(SurfaceError::Lost),
-            wgpu::CurrentSurfaceTexture::Occluded => return Err(SurfaceError::Timeout),
-            wgpu::CurrentSurfaceTexture::Validation => {
-                return Err(SurfaceError::Other("Validation error".into()))
-            }
-        };
-        let view = surface_texture
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Main Render Encoder"),
-            });
-
-        self.main_ui.egui_renderer.update_buffers(
-            &self.device,
-            &self.queue,
-            &mut encoder,
-            &paint_jobs,
-            &screen_descriptor,
-        );
-
-        self.viewport.render(
-            &mut encoder,
-            &view,
-            &self.depth_view,
-            &self.painter.bind_group,
-        );
-
-        {
-            let mut egui_pass = encoder
-                .begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("Egui Render Pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                        depth_slice: None,
-                    })],
-                    depth_stencil_attachment: None,
-                    occlusion_query_set: None,
-                    timestamp_writes: None,
-                    multiview_mask: None,
-                })
-                .forget_lifetime();
-
-            self.main_ui
-                .egui_renderer
-                .render(&mut egui_pass, &paint_jobs, &screen_descriptor);
-        }
-
-        self.queue.submit(std::iter::once(encoder.finish()));
-        surface_texture.present();
-
-        for id in &egui_output.textures_delta.free {
-            self.main_ui.egui_renderer.free_texture(id);
-        }
-
-        self.ecs_runtime.ui_frame_ops.begin_main_egui_frame = false;
-        self.ecs_runtime.ui_frame_ops.draw_main_egui_panels = false;
-        self.ecs_runtime.ui_frame_ops.end_main_egui_frame_and_upload = false;
-        self.main_ui.frame_begun = false;
-
-        Ok(())
+        (egui_output.textures_delta, paint_jobs)
     }
 
-    pub fn render_uv_viewer(&mut self) -> Result<(), SurfaceError> {
+    pub fn draw_uv_ui(&mut self) -> Option<(egui::TexturesDelta, Vec<egui::ClippedPrimitive>)> {
         let mut pending_ui_actions: Vec<ecs::events::UiActionEvent> = Vec::new();
-        {
+        let res = {
             let viewer = match &mut self.uv_ui.viewer {
                 Some(v) => v,
-                None => return Ok(()),
+                None => return None,
             };
 
             debug_assert!(
@@ -1262,94 +1178,14 @@ impl State {
                 .egui_ctx
                 .tessellate(egui_output.shapes, egui_output.pixels_per_point);
 
-            for (id, image_delta) in &egui_output.textures_delta.set {
-                viewer
-                    .egui_renderer
-                    .update_texture(&self.device, &self.queue, *id, image_delta);
-            }
-
-            let screen_descriptor = egui_wgpu::ScreenDescriptor {
-                size_in_pixels: [viewer.config.width, viewer.config.height],
-                pixels_per_point: viewer.window.scale_factor() as f32,
-            };
-
-            let surface_texture = match viewer.surface.get_current_texture() {
-                wgpu::CurrentSurfaceTexture::Success(t) => t,
-                wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
-                wgpu::CurrentSurfaceTexture::Timeout => return Err(SurfaceError::Timeout),
-                wgpu::CurrentSurfaceTexture::Outdated => return Err(SurfaceError::Outdated),
-                wgpu::CurrentSurfaceTexture::Lost => return Err(SurfaceError::Lost),
-                wgpu::CurrentSurfaceTexture::Occluded => return Err(SurfaceError::Timeout),
-                wgpu::CurrentSurfaceTexture::Validation => {
-                    return Err(SurfaceError::Other("Validation error".into()))
-                }
-            };
-            let view = surface_texture
-                .texture
-                .create_view(&wgpu::TextureViewDescriptor::default());
-
-            let mut encoder = self
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("UV Viewer Render Encoder"),
-                });
-
-            viewer.egui_renderer.update_buffers(
-                &self.device,
-                &self.queue,
-                &mut encoder,
-                &paint_jobs,
-                &screen_descriptor,
-            );
-
-            {
-                let mut egui_pass = encoder
-                    .begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("UV Viewer Egui Pass"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: &view,
-                            resolve_target: None,
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(wgpu::Color {
-                                    r: 0.15,
-                                    g: 0.15,
-                                    b: 0.15,
-                                    a: 1.0,
-                                }),
-                                store: wgpu::StoreOp::Store,
-                            },
-                            depth_slice: None,
-                        })],
-                        depth_stencil_attachment: None,
-                        occlusion_query_set: None,
-                        timestamp_writes: None,
-                        multiview_mask: None,
-                    })
-                    .forget_lifetime();
-
-                viewer
-                    .egui_renderer
-                    .render(&mut egui_pass, &paint_jobs, &screen_descriptor);
-            }
-
-            self.queue.submit(std::iter::once(encoder.finish()));
-            surface_texture.present();
-
-            for id in &egui_output.textures_delta.free {
-                viewer.egui_renderer.free_texture(id);
-            }
-        }
+            (egui_output.textures_delta, paint_jobs)
+        };
 
         for action in pending_ui_actions {
             self.emit_ui_action(action);
         }
         self.process_ecs_step();
 
-        self.ecs_runtime.ui_frame_ops.begin_uv_egui_frame = false;
-        self.ecs_runtime.ui_frame_ops.draw_uv_egui_panels = false;
-        self.ecs_runtime.ui_frame_ops.end_uv_egui_frame_and_upload = false;
-        self.uv_ui.frame_begun = false;
-
-        Ok(())
+        Some(res)
     }
 }
