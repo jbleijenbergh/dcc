@@ -1,4 +1,4 @@
-use super::{State, SurfaceError};
+use super::{ecs, State, SurfaceError};
 
 impl State {
     pub fn render_main_surface(
@@ -17,7 +17,9 @@ impl State {
             pixels_per_point: self.window.scale_factor() as f32,
         };
 
-        let surface_texture = match self.surface.get_current_texture() {
+        let main_ctx = self.ecs_runtime.world().get_resource::<ecs::MainRenderContextResource>().unwrap();
+
+        let surface_texture = match main_ctx.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t) => t,
             wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
             wgpu::CurrentSurfaceTexture::Timeout => return Err(SurfaceError::Timeout),
@@ -49,7 +51,7 @@ impl State {
         self.viewport.render(
             &mut encoder,
             &view,
-            &self.depth_view,
+            &main_ctx.depth_view,
             &self.painter.bind_group,
         );
 

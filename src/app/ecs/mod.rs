@@ -234,6 +234,19 @@ pub struct InteractionStateResource {
     pub last_hit_pos: Option<glam::Vec3>,
 }
 
+/// ECS resource owning the main window winit handle.
+#[derive(Resource, Clone)]
+pub struct WindowResource(pub std::sync::Arc<winit::window::Window>);
+
+/// ECS resource owning the main surface and depth target rendering context.
+#[derive(Resource)]
+pub struct MainRenderContextResource {
+    pub surface: wgpu::Surface<'static>,
+    pub config: wgpu::SurfaceConfiguration,
+    pub depth_texture: wgpu::Texture,
+    pub depth_view: wgpu::TextureView,
+}
+
 /// Resource wrapper for user preferences and settings.
 #[derive(Resource, Clone)]
 pub struct PreferencesResource(pub crate::app::user_preferences::UserPreferences);
@@ -798,21 +811,27 @@ pub mod systems {
     pub fn apply_surface_ops_system(
         state_ptr: Res<HostStatePtr>,
         mut pending_ops: ResMut<PendingSurfaceOpsResource>,
+        main_ctx: Option<ResMut<super::MainRenderContextResource>>,
     ) {
+        let Some(mut main_ctx) = main_ctx else {
+            return;
+        };
         if state_ptr.0.is_null() {
             return;
         }
         let state = unsafe { &mut *state_ptr.0 };
         let ops = std::mem::take(&mut *pending_ops);
 
+        let main_ctx = &mut *main_ctx;
+
         state.surface_host.apply_pending_surface_ops(
             ops,
             &mut state.size,
-            &mut state.config,
-            &state.surface,
+            &mut main_ctx.config,
+            &main_ctx.surface,
             &state.device,
-            &mut state.depth_texture,
-            &mut state.depth_view,
+            &mut main_ctx.depth_texture,
+            &mut main_ctx.depth_view,
             &mut state.viewport,
             &mut state.uv_ui.viewer,
             &mut state.ecs_runtime,

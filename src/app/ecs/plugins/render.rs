@@ -26,7 +26,8 @@ pub fn register(schedule: &mut Schedule) {
             systems::ecs_render_main_system,
         )
             .chain()
-            .in_set(FramePhase::RenderMainSurface),
+            .in_set(FramePhase::RenderMainSurface)
+            .after(systems::draw_egui_panels_system),
     );
     schedule.add_systems(
         (

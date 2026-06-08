@@ -318,16 +318,21 @@ impl State {
         );
         ecs_runtime.register_surface_registry(size.width, size.height);
 
-        let state = Self {
-            window,
+        // Store active window and combined render context directly in ECS resources
+        ecs_runtime.world_mut().insert_resource(ecs::WindowResource(window.clone()));
+        ecs_runtime.world_mut().insert_resource(ecs::MainRenderContextResource {
             surface,
-            device,
-            queue,
             config,
-            size,
-            viewport,
             depth_texture,
             depth_view,
+        });
+
+        let state = Self {
+            window,
+            device,
+            queue,
+            size,
+            viewport,
             painter,
             main_ui: MainUiRuntime::new(egui_ctx, egui_state, egui_renderer),
             instance,
@@ -361,16 +366,32 @@ impl State {
     }
 
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
+        let mut main_ctx = self.ecs_runtime.world_mut().get_resource_mut::<ecs::MainRenderContextResource>().unwrap();
+        let main_ctx = &mut *main_ctx;
         self.surface_host.resize_main_surface(
             new_size,
             &mut self.size,
-            &mut self.config,
-            &self.surface,
+            &mut main_ctx.config,
+            &main_ctx.surface,
             &self.device,
-            &mut self.depth_texture,
-            &mut self.depth_view,
+            &mut main_ctx.depth_texture,
+            &mut main_ctx.depth_view,
             &mut self.viewport,
         );
+    }
+
+    pub fn surface_format(&self) -> wgpu::TextureFormat {
+        self.ecs_runtime.world().get_resource::<ecs::MainRenderContextResource>().unwrap().config.format
+    }
+
+    pub fn present_mode(&self) -> wgpu::PresentMode {
+        self.ecs_runtime.world().get_resource::<ecs::MainRenderContextResource>().unwrap().config.present_mode
+    }
+
+    pub fn configure_surface(&mut self, present_mode: wgpu::PresentMode) {
+        let mut main_ctx = self.ecs_runtime.world_mut().get_resource_mut::<ecs::MainRenderContextResource>().unwrap();
+        main_ctx.config.present_mode = present_mode;
+        main_ctx.surface.configure(&self.device, &main_ctx.config);
     }
 
     pub fn resize_uv_viewer(&mut self, width: u32, height: u32) {

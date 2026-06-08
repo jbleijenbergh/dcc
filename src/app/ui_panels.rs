@@ -74,6 +74,9 @@ impl State {
         let mut gltf_to_load = None;
         let mut save_bindings_requested = false;
         let mut reset_bindings_requested = false;
+        let mut present_mode_to_configure = None;
+        let surface_format = self.surface_format();
+        let present_mode = self.present_mode();
         let mut pending_ui_actions: Vec<ecs::events::UiActionEvent> = Vec::new();
         if dismiss_error_requested {
             pending_ui_actions.push(ecs::events::UiActionEvent::DismissLoadError);
@@ -667,7 +670,7 @@ impl State {
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label("Color Format:");
-                        ui.label(egui::RichText::new(format!("{:?}", self.config.format)).strong());
+                        ui.label(egui::RichText::new(format!("{:?}", surface_format)).strong());
                     });
 
                     let refresh_rate = self.window.current_monitor()
@@ -681,10 +684,10 @@ impl State {
 
                     ui.horizontal(|ui| {
                         ui.label("VSync / Present Mode:");
-                        let mut present_mode = self.config.present_mode;
-                        let prev_mode = present_mode;
+                        let mut current_mode = present_mode;
+                        let prev_mode = current_mode;
                         egui::ComboBox::from_id_salt("present_mode_select")
-                            .selected_text(match present_mode {
+                            .selected_text(match current_mode {
                                 wgpu::PresentMode::Fifo => "VSync On (Fifo)",
                                 wgpu::PresentMode::Immediate => "VSync Off (Immediate)",
                                 wgpu::PresentMode::Mailbox => "VSync Off (Mailbox)",
@@ -694,25 +697,23 @@ impl State {
                             })
                             .show_ui(ui, |ui| {
                                 if self.render_host.supports_present_mode(wgpu::PresentMode::Fifo) {
-                                    ui.selectable_value(&mut present_mode, wgpu::PresentMode::Fifo, "VSync On (Fifo)");
+                                    ui.selectable_value(&mut current_mode, wgpu::PresentMode::Fifo, "VSync On (Fifo)");
                                 }
                                 if self.render_host.supports_present_mode(wgpu::PresentMode::Immediate) {
-                                    ui.selectable_value(&mut present_mode, wgpu::PresentMode::Immediate, "VSync Off (Immediate)");
+                                    ui.selectable_value(&mut current_mode, wgpu::PresentMode::Immediate, "VSync Off (Immediate)");
                                 }
                                 if self.render_host.supports_present_mode(wgpu::PresentMode::Mailbox) {
-                                    ui.selectable_value(&mut present_mode, wgpu::PresentMode::Mailbox, "VSync Off (Mailbox)");
+                                    ui.selectable_value(&mut current_mode, wgpu::PresentMode::Mailbox, "VSync Off (Mailbox)");
                                 }
                                 if self.render_host.supports_present_mode(wgpu::PresentMode::AutoVsync) {
-                                    ui.selectable_value(&mut present_mode, wgpu::PresentMode::AutoVsync, "Auto VSync");
+                                    ui.selectable_value(&mut current_mode, wgpu::PresentMode::AutoVsync, "Auto VSync");
                                 }
                                 if self.render_host.supports_present_mode(wgpu::PresentMode::AutoNoVsync) {
-                                    ui.selectable_value(&mut present_mode, wgpu::PresentMode::AutoNoVsync, "Auto VSync Off");
+                                    ui.selectable_value(&mut current_mode, wgpu::PresentMode::AutoNoVsync, "Auto VSync Off");
                                 }
-                            });
-                        if present_mode != prev_mode {
-                            self.config.present_mode = present_mode;
-                            self.surface.configure(&self.device, &self.config);
-                            log::info!("Present mode switched to {:?}", present_mode);
+                             });
+                        if current_mode != prev_mode {
+                            present_mode_to_configure = Some(current_mode);
                         }
                     });
                 });
@@ -803,6 +804,11 @@ impl State {
                 });
             });
         });
+
+        if let Some(mode) = present_mode_to_configure {
+            self.configure_surface(mode);
+            log::info!("Present mode switched to {:?}", mode);
+        }
 
         if let Some(tool) = pending_tool_selection {
             self.emit_ui_action(ecs::events::UiActionEvent::SelectTool(tool));

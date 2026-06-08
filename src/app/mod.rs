@@ -109,17 +109,13 @@ impl MainUiRuntime {
 }
 
 pub struct State {
-    surface: wgpu::Surface<'static>,
     device: Arc<wgpu::Device>,
     queue: wgpu::Queue,
-    config: wgpu::SurfaceConfiguration,
     pub size: winit::dpi::PhysicalSize<u32>,
     pub window: Arc<Window>,
 
     // Render pipeline & logic state
     viewport: crate::viewport::Viewport,
-    depth_texture: wgpu::Texture,
-    depth_view: wgpu::TextureView,
     pub painter: crate::painter::Painter,
 
     // Main window egui state
