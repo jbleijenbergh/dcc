@@ -202,9 +202,6 @@ pub struct InteractionStateResource {
 #[derive(Resource, Clone)]
 pub struct PreferencesResource(pub crate::app::user_preferences::UserPreferences);
 
-/// Resource wrapper for transient UI state (errors, feedback, etc).
-#[derive(Resource, Clone)]
-pub struct UiStateResource(pub crate::app::ui::TransientUiState);
 
 /// Resource wrapper for GPU context handles.
 ///
@@ -475,10 +472,6 @@ impl EcsRuntime {
         });
     }
 
-    /// Register UI state into the world.
-    pub fn register_ui_state(&mut self, ui_state: crate::app::ui::TransientUiState) {
-        self.world.insert_resource(UiStateResource(ui_state));
-    }
 
     /// Register GPU context into the world.
     pub fn register_gpu_context(

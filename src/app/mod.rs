@@ -445,7 +445,6 @@ impl State {
         ecs_runtime.register_domain_state(app_state.clone());
         ecs_runtime.register_interaction_state(ecs::InteractionStateResource::default());
         ecs_runtime.register_preferences(preferences.clone());
-        ecs_runtime.register_ui_state(ui::TransientUiState::default());
         ecs_runtime.register_main_ui_resource(egui_ctx.clone(), true, true);
         ecs_runtime.update_uv_ui_resource(None, false, false);
         ecs_runtime.register_gpu_context(
