@@ -419,7 +419,7 @@ Phase 1 sign-off criteria:
 
 **Status**: ✅ COMPLETE (2026-06-08)
 - Replaced direct UI command mutation points in `src/app/mod.rs` with ECS intent emission (`emit_ui_action`) for panel/widget-driven actions
-- Added centralized ECS event flush path (`flush_ecs_events_to_reducer`) to preserve immediate behavior parity while keeping UI code intent-only
+- Added centralized ECS event flush path (`flush_ecs_events`) to preserve immediate behavior parity while keeping UI code intent-only
 - Updated UV viewer visibility setter path to emit UI intent events rather than directly applying mutations
 - Validation: tests run successfully
 

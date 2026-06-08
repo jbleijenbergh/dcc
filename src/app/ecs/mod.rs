@@ -7,6 +7,7 @@
 use bevy_ecs::prelude::*;
 
 mod plugins;
+pub mod domain;
 
 /// Phase 3: System sets for deterministic frame flow.
 /// Each set represents a logical phase in the frame.
@@ -255,6 +256,19 @@ pub struct PendingPrepareOpsResource {
     pub update_main_camera_uniform: bool,
 }
 
+/// Pending host-side domain operations emitted by ECS mutation systems.
+///
+/// These operations represent non-ECS side effects that still require host adapters
+/// (painter, viewport, undo/redo, import settings, etc).
+#[derive(Resource, Clone, Debug, Default)]
+pub struct PendingDomainHostOpsResource {
+    pub ui_actions: Vec<events::UiActionEvent>,
+    pub document_commands: Vec<events::DocumentCommandEvent>,
+    pub viewport_commands: Vec<events::ViewportCommandEvent>,
+    pub tool_commands: Vec<events::ToolCommandEvent>,
+    pub input_state_commands: Vec<events::InputStateCommandEvent>,
+}
+
 /// Phase 5.1: Per-window UI registry owned by ECS.
 #[derive(Resource, Clone, Copy, Debug)]
 pub struct UiWindowRegistryResource {
@@ -297,6 +311,10 @@ pub struct UvWindowUiResource {
     pub has_winit_state: bool,
     pub has_renderer: bool,
 }
+
+/// Runtime-owned tool handlers persisted across frames/events.
+#[derive(Resource, Default)]
+pub struct ToolRuntimeResource(pub crate::app::tools::ToolSystem);
 
 /// Phase 3.2: Extracted render data for read-only render stages.
 ///
@@ -374,9 +392,11 @@ impl EcsRuntime {
         world.init_resource::<SurfaceRegistryResource>();
         world.init_resource::<PendingSurfaceOpsResource>();
         world.init_resource::<PendingPrepareOpsResource>();
+        world.init_resource::<PendingDomainHostOpsResource>();
         world.init_resource::<PendingRenderOpsResource>();
         world.init_resource::<UiWindowRegistryResource>();
         world.init_resource::<PendingUiFrameOpsResource>();
+        world.init_resource::<ToolRuntimeResource>();
         
         // Phase 3: Initialize ordered schedules for deterministic frame flow.
         // The main schedule will execute each phase in order.
@@ -403,6 +423,18 @@ impl EcsRuntime {
     /// Register a domain state resource into the world.
     pub fn register_domain_state(&mut self, app_state: crate::app::app_state::AppState) {
         self.world.insert_resource(DomainStateResource(app_state));
+    }
+
+    /// Synchronize host-owned app state into ECS domain resource.
+    ///
+    /// This is the explicit contract while domain mutation is still host-driven.
+    /// Call once per frame before ECS schedule execution.
+    pub fn sync_domain_state_from(&mut self, app_state: &crate::app::app_state::AppState) {
+        if let Some(mut domain) = self.world.get_resource_mut::<DomainStateResource>() {
+            domain.0 = app_state.clone();
+        } else {
+            self.world.insert_resource(DomainStateResource(app_state.clone()));
+        }
     }
 
     /// Register interaction state into the world.
@@ -555,6 +587,15 @@ impl EcsRuntime {
         pending
     }
 
+    /// Take pending host-side domain operations emitted by ECS systems.
+    pub fn take_pending_domain_host_ops(&mut self) -> PendingDomainHostOpsResource {
+        let mut pending = PendingDomainHostOpsResource::default();
+        if let Some(mut ops) = self.world.get_resource_mut::<PendingDomainHostOpsResource>() {
+            pending = std::mem::take(&mut *ops);
+        }
+        pending
+    }
+
     /// Take pending UI frame lifecycle operations produced by ECS systems.
     pub fn take_pending_ui_frame_ops(&mut self) -> PendingUiFrameOpsResource {
         let mut pending = PendingUiFrameOpsResource::default();
@@ -635,6 +676,7 @@ pub mod systems {
         ExtractedDocumentData,
         ExtractedLayerComposition,
         PendingPrepareOpsResource,
+        PendingDomainHostOpsResource,
         PendingRenderOpsResource,
         PendingSurfaceOpsResource,
         PendingUiFrameOpsResource,
@@ -850,35 +892,40 @@ pub mod systems {
         }
     }
 
-    /// System stub: consumes viewport command events (actual dispatch happens in State).
+    /// Consume viewport command events and queue host-side adapters.
     pub fn viewport_command_system(
         mut events: bevy_ecs::event::EventReader<AppEvent>,
+        mut pending_host_ops: ResMut<PendingDomainHostOpsResource>,
     ) {
         for event in events.read() {
-            if let AppEvent::Viewport(_) = event {
-                // Event consumed; dispatch happens at State level
+            if let AppEvent::Viewport(command) = event {
+                pending_host_ops.viewport_commands.push(*command);
             }
         }
     }
 
-    /// System stub: consumes tool command events (actual dispatch happens in State).
+    /// Consume tool command events and queue host-side adapters.
     pub fn tool_command_system(
         mut events: bevy_ecs::event::EventReader<AppEvent>,
+        mut pending_host_ops: ResMut<PendingDomainHostOpsResource>,
     ) {
         for event in events.read() {
-            if let AppEvent::Tool(_) = event {
-                // Event consumed; dispatch happens at State level
+            if let AppEvent::Tool(command) = event {
+                pending_host_ops.tool_commands.push(*command);
             }
         }
     }
 
-    /// System stub: consumes input state command events (actual dispatch happens in State).
+    /// Consume input state commands, mirror ECS domain state, and queue host adapters.
     pub fn input_state_system(
         mut events: bevy_ecs::event::EventReader<AppEvent>,
+        mut domain: ResMut<DomainStateResource>,
+        mut pending_host_ops: ResMut<PendingDomainHostOpsResource>,
     ) {
         for event in events.read() {
-            if let AppEvent::InputState(_) = event {
-                // Event consumed; dispatch happens at State level
+            if let AppEvent::InputState(command) = event {
+                crate::app::ecs::domain::apply_input_state_event_to_app_state(&mut domain.0, command);
+                pending_host_ops.input_state_commands.push(*command);
             }
         }
     }
@@ -886,10 +933,13 @@ pub mod systems {
     /// System stub: consumes UI action events (actual dispatch happens in State).
     pub fn ui_action_system(
         mut events: bevy_ecs::event::EventReader<AppEvent>,
+        mut domain: ResMut<DomainStateResource>,
+        mut pending_host_ops: ResMut<PendingDomainHostOpsResource>,
     ) {
         for event in events.read() {
-            if let AppEvent::Ui(_) = event {
-                // Event consumed; dispatch happens at State level
+            if let AppEvent::Ui(ui_action) = event {
+                crate::app::ecs::domain::apply_ui_event_to_app_state(&mut domain.0, ui_action);
+                pending_host_ops.ui_actions.push(ui_action.clone());
             }
         }
     }
@@ -897,10 +947,13 @@ pub mod systems {
     /// System stub: consumes document command events (actual dispatch happens in State).
     pub fn document_command_system(
         mut events: bevy_ecs::event::EventReader<AppEvent>,
+        mut domain: ResMut<DomainStateResource>,
+        mut pending_host_ops: ResMut<PendingDomainHostOpsResource>,
     ) {
         for event in events.read() {
-            if let AppEvent::Document(_) = event {
-                // Event consumed; dispatch happens at State level
+            if let AppEvent::Document(command) = event {
+                crate::app::ecs::domain::apply_document_event_to_app_state(&mut domain.0, command);
+                pending_host_ops.document_commands.push(command.clone());
             }
         }
     }
@@ -971,6 +1024,35 @@ mod tests {
         ));
         runtime.tick();
         // Should not panic
+    }
+
+    #[test]
+    fn test_drain_events_preserves_send_order() {
+        let mut runtime = EcsRuntime::new();
+        runtime.send_event(events::AppEvent::Viewport(
+            events::ViewportCommandEvent::Zoom { scroll: 1.0 },
+        ));
+        runtime.send_event(events::AppEvent::Document(
+            events::DocumentCommandEvent::CommitCurrentStroke,
+        ));
+
+        let drained = runtime.drain_events();
+        assert_eq!(drained.len(), 2);
+
+        assert!(matches!(
+            drained[0],
+            events::AppEvent::Viewport(events::ViewportCommandEvent::Zoom { .. })
+        ));
+        assert!(matches!(
+            drained[1],
+            events::AppEvent::Document(events::DocumentCommandEvent::CommitCurrentStroke)
+        ));
+    }
+
+    #[test]
+    fn test_tool_runtime_resource_initialized() {
+        let runtime = EcsRuntime::new();
+        assert!(runtime.world.get_resource::<ToolRuntimeResource>().is_some());
     }
 
     #[test]
@@ -1067,5 +1149,94 @@ mod tests {
         assert!(runtime.world.get_resource::<ExtractedCameraData>().is_some());
         assert!(runtime.world.get_resource::<ExtractedLayerComposition>().is_some());
         assert!(runtime.world.get_resource::<ExtractedDocumentData>().is_some());
+    }
+
+    #[test]
+    fn test_extracted_document_data_reflects_synced_domain_state() {
+        let mut runtime = EcsRuntime::new();
+        let mut app_state = crate::app::app_state::AppState::new();
+
+        app_state.document_mut().current_mesh = "Cube".to_string();
+        app_state.document_mut().num_udim_tiles = 7;
+        app_state.document_mut().layer_count = 3;
+
+        runtime.sync_domain_state_from(&app_state);
+        runtime.tick();
+
+        let extracted = runtime
+            .world
+            .get_resource::<ExtractedDocumentData>()
+            .expect("ExtractedDocumentData must exist");
+
+        assert_eq!(extracted.current_mesh, "Cube");
+        assert_eq!(extracted.num_udim_tiles, 7);
+        assert_eq!(extracted.num_paint_layers, 3);
+    }
+
+    #[test]
+    fn test_ui_system_mutates_domain_state_resource() {
+        let mut runtime = EcsRuntime::new();
+        runtime.send_event(events::AppEvent::Ui(events::UiActionEvent::SetBrushSize(123.0)));
+
+        runtime.tick();
+
+        let domain = runtime
+            .world
+            .get_resource::<DomainStateResource>()
+            .expect("DomainStateResource must exist");
+        let mut snapshot = domain.0.clone();
+        assert_eq!(snapshot.canvas_mut().brush_size, 123.0);
+    }
+
+    #[test]
+    fn test_document_system_mutates_domain_state_resource() {
+        let mut runtime = EcsRuntime::new();
+        runtime.send_event(events::AppEvent::Document(
+            events::DocumentCommandEvent::ClearAllLayers,
+        ));
+
+        runtime.tick();
+
+        let domain = runtime
+            .world
+            .get_resource::<DomainStateResource>()
+            .expect("DomainStateResource must exist");
+        let mut snapshot = domain.0.clone();
+        assert_eq!(snapshot.document_mut().layer_count, 1);
+        assert_eq!(snapshot.document_mut().active_layer_idx, 0);
+    }
+
+    #[test]
+    fn test_ui_system_emits_pending_host_ui_ops() {
+        let mut runtime = EcsRuntime::new();
+        runtime.send_event(events::AppEvent::Ui(events::UiActionEvent::SetBrushOpacity(
+            0.25,
+        )));
+
+        runtime.tick();
+
+        let pending = runtime.take_pending_domain_host_ops();
+        assert_eq!(pending.ui_actions.len(), 1);
+        assert!(matches!(
+            pending.ui_actions[0],
+            events::UiActionEvent::SetBrushOpacity(_)
+        ));
+    }
+
+    #[test]
+    fn test_document_system_emits_pending_host_document_ops() {
+        let mut runtime = EcsRuntime::new();
+        runtime.send_event(events::AppEvent::Document(
+            events::DocumentCommandEvent::CommitCurrentStroke,
+        ));
+
+        runtime.tick();
+
+        let pending = runtime.take_pending_domain_host_ops();
+        assert_eq!(pending.document_commands.len(), 1);
+        assert!(matches!(
+            pending.document_commands[0],
+            events::DocumentCommandEvent::CommitCurrentStroke
+        ));
     }
 }

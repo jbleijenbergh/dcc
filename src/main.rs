@@ -61,7 +61,7 @@ impl ApplicationHandler for App {
                     }
                     _ => {}
                 }
-            } else if let Some(ref mut viewer) = state.uv_viewer {
+            } else if let Some(ref mut viewer) = state.uv_viewer_mut() {
                 if window_id == viewer.window.id() {
                     let egui_resp = viewer.egui_state.on_window_event(&*viewer.window, &event);
                     if egui_resp.consumed {
@@ -69,7 +69,7 @@ impl ApplicationHandler for App {
                     }
                     match event {
                         WindowEvent::CloseRequested => {
-                            state.uv_viewer = None;
+                            state.clear_uv_viewer_window();
                             state.set_uv_viewer_visible(false);
                         }
                         WindowEvent::Resized(physical_size) => {
@@ -101,7 +101,7 @@ impl ApplicationHandler for App {
             if size.width > 0 && size.height > 0 {
                 state.window.request_redraw();
             }
-            if let Some(ref viewer) = state.uv_viewer {
+            if let Some(ref viewer) = state.uv_viewer() {
                 let size = viewer.window.inner_size();
                 if size.width > 0 && size.height > 0 {
                     viewer.window.request_redraw();
