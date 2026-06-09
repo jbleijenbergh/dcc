@@ -199,7 +199,7 @@ impl Viewport {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("3D Mesh Shader"),
             source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!(
-                "shaders/3d_mesh.wgsl"
+                "../shaders/3d_mesh.wgsl"
             ))),
         });
 

@@ -269,7 +269,7 @@ impl Painter {
         // 2. Brush Pipeline
         let brush_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Brush Shader"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("shaders/brush.wgsl"))),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("../shaders/brush.wgsl"))),
         });
 
         let brush_uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -422,7 +422,7 @@ impl Painter {
         // 3. Composite Pipeline
         let composite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Composite Shader"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("shaders/composite.wgsl"))),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("../shaders/composite.wgsl"))),
         });
 
         let composite_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -523,7 +523,7 @@ impl Painter {
         // 4. Fill Pipeline
         let fill_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Fill Shader"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("shaders/fill.wgsl"))),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("../shaders/fill.wgsl"))),
         });
 
         let fill_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {

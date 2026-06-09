@@ -1,15 +1,14 @@
 mod actions;
-mod app_state;
+pub(crate) mod app_state;
 pub mod ecs;
-pub(crate) mod input;
-mod input_editor;
+pub use crate::core::input;
 mod render;
 mod surface;
 mod tools;
 mod types;
 mod ui;
 mod ui_panels;
-mod user_preferences;
+pub use crate::core::preferences as user_preferences;
 
 pub use surface::UvViewerWindow;
 pub(crate) use surface::{
@@ -153,6 +152,31 @@ impl State {
 
     pub(crate) fn painter_mut(&mut self) -> &mut crate::painter::Painter {
         &mut self.ecs_runtime.world_mut().get_resource_mut::<ecs::PainterResource>().expect("PainterResource").into_inner().0
+    }
+
+    pub(crate) fn save_settings(&mut self) {
+        log::debug!("Saving bindings to {}", self.preferences_path.display());
+        match self.preferences.save_to(&self.preferences_path) {
+            Ok(()) => {
+                let feedback = format!("Saved settings to {}", self.preferences_path.display());
+                log::debug!(
+                    "Bindings saved successfully: orbit_mod={}, pan_mod={}, undo={}, redo={}",
+                    self.preferences.bindings.orbit_modifier.key,
+                    self.preferences.bindings.pan_modifier.key,
+                    self.preferences.bindings.undo.key,
+                    self.preferences.bindings.redo.key
+                );
+                self.ui_state.settings_feedback = Some(feedback);
+            }
+            Err(e) => {
+                self.ui_state.settings_feedback = Some(format!("Failed to save settings: {}", e));
+                log::error!(
+                    "Failed to save bindings to {}: {}",
+                    self.preferences_path.display(),
+                    e
+                );
+            }
+        }
     }
 
     pub fn uv_viewer(&self) -> Option<&UvViewerWindow> {

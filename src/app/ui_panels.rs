@@ -856,7 +856,7 @@ impl State {
                         }
                     });
 
-                    let conflicts = Self::binding_conflicts(&self.preferences.bindings);
+                    let conflicts = self.preferences.bindings.conflicts();
                     if !conflicts.is_empty() {
                         ui.add_space(6.0);
                         ui.colored_label(egui::Color32::from_rgb(255, 180, 80), "Binding conflicts detected:");
@@ -1277,5 +1277,46 @@ impl State {
         }
 
         Some(res)
+    }
+
+    pub(crate) fn draw_key_binding_editor(
+        ui: &mut egui::Ui,
+        id: &str,
+        binding: &mut user_preferences::KeyBinding,
+    ) {
+        ui.horizontal(|ui| {
+            ui.label("Key");
+            egui::ComboBox::from_id_salt(id)
+                .selected_text(&binding.key)
+                .show_ui(ui, |ui| {
+                    for key in user_preferences::KEY_CHOICES {
+                        ui.selectable_value(&mut binding.key, (*key).to_string(), *key);
+                    }
+                });
+        });
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut binding.primary_mod, "Primary Mod (Ctrl/Cmd)");
+            ui.checkbox(&mut binding.ctrl, "Ctrl");
+            ui.checkbox(&mut binding.cmd, "Cmd");
+            ui.checkbox(&mut binding.alt, "Alt");
+            ui.checkbox(&mut binding.shift, "Shift");
+        });
+    }
+
+    pub(crate) fn draw_mouse_binding_editor(
+        ui: &mut egui::Ui,
+        id: &str,
+        binding: &mut user_preferences::MouseBinding,
+    ) {
+        ui.horizontal(|ui| {
+            ui.label("Button");
+            egui::ComboBox::from_id_salt(id)
+                .selected_text(&binding.button)
+                .show_ui(ui, |ui| {
+                    for button in user_preferences::MOUSE_BUTTON_CHOICES {
+                        ui.selectable_value(&mut binding.button, (*button).to_string(), *button);
+                    }
+                });
+        });
     }
 }

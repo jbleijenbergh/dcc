@@ -39,7 +39,7 @@ pub struct RaycastHit {
     pub point: Vec3,
 }
 
-pub fn intersect_document(ray: &Ray, document: &crate::mesh::Document) -> Option<RaycastHit> {
+pub fn intersect_document(ray: &Ray, document: &crate::graphics::mesh::Document) -> Option<RaycastHit> {
     let mut closest_hit: Option<RaycastHit> = None;
 
     let nodes = document.get_active_nodes();
@@ -101,7 +101,7 @@ pub fn intersect_aabb(ray: &Ray, min: Vec3, max: Vec3) -> bool {
 
 pub fn intersect_primitive(
     ray: &Ray,
-    primitive: &crate::mesh::Primitive,
+    primitive: &crate::graphics::mesh::Primitive,
     world_matrix: Mat4,
 ) -> Option<RaycastHit> {
     // 1. Transform ray to primitive's local space

@@ -210,3 +210,113 @@ pub fn create_plane_document(
     let (vertices, indices) = create_plane(size);
     Document::from_single_primitive(device, layout, vertices, indices, "Plane")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod sphere_tests {
+        use super::*;
+
+        #[test]
+        fn test_sphere_generation_counts() {
+            let (vertices, indices) = create_sphere(1.0, 10, 10);
+            assert_eq!(vertices.len(), 100);
+            assert_eq!(indices.len(), 486);
+        }
+
+        #[test]
+        fn test_sphere_generation_bounds() {
+            let radius = 1.5;
+            let (vertices, _indices) = create_sphere(radius, 10, 10);
+            for v in vertices {
+                let len = glam::Vec3::from(v.position).length();
+                assert!(
+                    (len - radius).abs() < 1e-4,
+                    "Vertex position length {} should be close to radius {}",
+                    len,
+                    radius
+                );
+            }
+        }
+
+        #[test]
+        fn test_sphere_seam_alignment() {
+            let rings = 32;
+            let sectors = 32;
+            let (vertices, _indices) = create_sphere(1.5, rings, sectors);
+            for r in 0..rings {
+                let idx_start = (r * sectors) as usize;
+                let idx_end = (r * sectors + sectors - 1) as usize;
+                let v_start = &vertices[idx_start];
+                let v_end = &vertices[idx_end];
+
+                // Compare positions
+                let p_start = glam::Vec3::from(v_start.position);
+                let p_end = glam::Vec3::from(v_end.position);
+                assert!(
+                    (p_start - p_end).length() < 1e-5,
+                    "Ring {}: position mismatch {:?} vs {:?}",
+                    r,
+                    p_start,
+                    p_end
+                );
+
+                // Compare texture coordinates
+                assert!(
+                    (v_start.tex_coords[0] - 0.0).abs() < 1e-5,
+                    "Ring {}: U start should be 0.0, got {}",
+                    r,
+                    v_start.tex_coords[0]
+                );
+                assert!(
+                    (v_end.tex_coords[0] - 1.0).abs() < 1e-5,
+                    "Ring {}: U end should be 1.0, got {}",
+                    r,
+                    v_end.tex_coords[0]
+                );
+                assert!(
+                    (v_start.tex_coords[1] - v_end.tex_coords[1]).abs() < 1e-5,
+                    "Ring {}: V mismatch {} vs {}",
+                    r,
+                    v_start.tex_coords[1],
+                    v_end.tex_coords[1]
+                );
+            }
+        }
+    }
+
+    mod cube_tests {
+        use super::*;
+
+        #[test]
+        fn test_cube_generation_counts() {
+            let (vertices, indices) = create_cube(2.0);
+            assert_eq!(vertices.len(), 24);
+            assert_eq!(indices.len(), 36);
+        }
+
+        #[test]
+        fn test_cube_generation_bounds() {
+            let size = 2.0;
+            let half = size / 2.0;
+            let (vertices, _indices) = create_cube(size);
+            for v in vertices {
+                for i in 0..3 {
+                    assert!(v.position[i].abs() <= half + 1e-5);
+                }
+            }
+        }
+    }
+
+    mod plane_tests {
+        use super::*;
+
+        #[test]
+        fn test_plane_generation_counts() {
+            let (vertices, indices) = create_plane(5.0);
+            assert_eq!(vertices.len(), 8);
+            assert_eq!(indices.len(), 12);
+        }
+    }
+}

@@ -56,6 +56,27 @@ impl KeyBinding {
             primary_mod: false,
         }
     }
+
+    pub fn signature(&self) -> String {
+        let mut parts: Vec<&str> = Vec::new();
+        if self.primary_mod {
+            parts.push("PrimaryMod");
+        }
+        if self.ctrl {
+            parts.push("Ctrl");
+        }
+        if self.cmd {
+            parts.push("Cmd");
+        }
+        if self.alt {
+            parts.push("Alt");
+        }
+        if self.shift {
+            parts.push("Shift");
+        }
+        parts.push(&self.key);
+        parts.join("+")
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -107,6 +128,52 @@ impl Default for InputBindings {
             paint_button: MouseBinding::new("Left"),
             pan_button: MouseBinding::new("Right"),
         }
+    }
+}
+
+impl InputBindings {
+    pub fn conflicts(&self) -> Vec<String> {
+        let key_bindings = [
+            ("Orbit Modifier", &self.orbit_modifier),
+            ("Pan Modifier", &self.pan_modifier),
+            ("Undo", &self.undo),
+            ("Redo", &self.redo),
+            ("Clear Canvas", &self.clear_canvas),
+            ("Brush Size Down", &self.brush_size_down),
+            ("Brush Size Up", &self.brush_size_up),
+            ("Select Brush Tool", &self.tool_brush),
+            ("Select Eraser Tool", &self.tool_eraser),
+        ];
+
+        let mouse_bindings = [
+            ("Paint Button", &self.paint_button),
+            ("Pan Button", &self.pan_button),
+        ];
+
+        let mut by_combo: std::collections::BTreeMap<String, Vec<&str>> = std::collections::BTreeMap::new();
+
+        for (name, binding) in key_bindings {
+            let key = format!("Key:{}", binding.signature());
+            by_combo.entry(key).or_default().push(name);
+        }
+
+        for (name, binding) in mouse_bindings {
+            let key = format!("Mouse:{}", binding.button);
+            by_combo.entry(key).or_default().push(name);
+        }
+
+        let mut warnings = Vec::new();
+        for (combo, actions) in by_combo {
+            if actions.len() > 1 {
+                warnings.push(format!(
+                    "{} is assigned to multiple actions: {}",
+                    combo,
+                    actions.join(", ")
+                ));
+            }
+        }
+
+        warnings
     }
 }
 

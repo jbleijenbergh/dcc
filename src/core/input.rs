@@ -3,7 +3,7 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, Wind
 use winit::keyboard::{KeyCode, PhysicalKey};
 
 use crate::app::app_state::InputSnapshot;
-use crate::app::ecs::events::{
+use crate::ecs::events::{
     AppEvent, DocumentCommandEvent, InputStateCommandEvent, ToolCommandEvent, ToolKind,
     UiActionEvent, ViewportCommandEvent,
 };
@@ -113,7 +113,7 @@ fn parse_mouse_button(button: &str) -> Option<MouseButton> {
 
 fn binding_matches_key(
     input: &InputSnapshot,
-    binding: &crate::app::user_preferences::KeyBinding,
+    binding: &crate::core::preferences::KeyBinding,
     key: KeyCode,
 ) -> bool {
     let Some(expected) = parse_key_code(&binding.key) else {
@@ -147,7 +147,7 @@ fn binding_matches_key(
 }
 
 fn binding_matches_mouse(
-    binding: &crate::app::user_preferences::MouseBinding,
+    binding: &crate::core::preferences::MouseBinding,
     button: MouseButton,
 ) -> bool {
     parse_mouse_button(&binding.button).map_or(false, |expected| expected == button)
@@ -189,7 +189,7 @@ fn pointer_from_position(
 
 pub fn normalize_window_event(
     input: &InputSnapshot,
-    bindings: &crate::app::user_preferences::InputBindings,
+    bindings: &crate::core::preferences::InputBindings,
     event: &WindowEvent,
 ) -> Vec<AppEvent> {
     let mut out = Vec::new();
